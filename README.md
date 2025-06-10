@@ -1,16 +1,19 @@
 <div align="center">
 
 # HappyAI: Bittensor SN103 <!-- omit in toc -->
+### Powering the Avocado mental-health companion
 </div>
 
 ---
 
 ## Abstract
-Mental health issues affect millions globally, influencing individuals’ personal, professional, and social well-being. Nowadays millions face barriers to accessing the care they need. From societal stigma to resource shortages, these challenges leave many struggling alone. Our vision is to harness the power of artificial intelligence to transform mental health care, making it accessible, empathetic, and effective for everyone, anytime and anywhere.
+Mental-health conditions affect hundreds of millions of people, yet stigma, cost, and limited clinical capacity still keep timely help out of reach. HappyAI set out to change that by building Avocado—an AI companion that offers accessible, empathetic, and evidence-based support around the clock.
 
-AI has the potential to democratize mental health care by offering immediate, personalized, and evidence-based support. With advanced natural language understanding and therapeutic frameworks like Cognitive Behavioral Therapy (CBT), AI can simulate empathetic, nonjudgmental conversations. It can guide users through reflection, provide actionable advice, and escalate critical issues to ensure safety—all while being available 24/7.
+Running on our Bittensor subnet, Avocado is available 24 hours a day, 7 days a week, ready whenever users reach for help. Each conversation is guided by proven Cognitive Behavioral Therapy principles, allowing the system to suggest practical exercises and reframing techniques that fit an individual’s situation. With advanced natural-language understanding, Avocado responds in a tone that feels human and supportive, adapting to the user’s emotional state rather than relying on canned replies.
 
-Existing mental health chatbots often lack the sophistication and depth required for truly meaningful support. They struggle to balance empathy with accuracy and to adapt to the nuances of individual emotional states. Improving these systems is essential to building trust and delivering impactful care. By integrating advanced therapeutic techniques, rigorous validation, and a continuous learning model, we strive to elevate the quality and reliability of AI-driven mental health solutions.
+At every step we enforce rigorous safety-escalation protocols. If a user’s messages indicate crisis-level distress, Avocado immediately surfaces local helplines and, where permitted, can hand off to live professionals—ensuring empathy never comes at the expense of responsibility.
+
+This project is just the start. HappyAI will continue creating applications where responsible AI tangibly improves quality of life—whether in wellbeing, productivity, or daily care—always with the same focus on accessibility, personalization, and safety.
 
 ---
 
