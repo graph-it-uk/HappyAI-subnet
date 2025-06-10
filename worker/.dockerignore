@@ -1,0 +1,25 @@
+# Ignore virtual environments
+venv/
+*.pyc
+__pycache__/
+
+# Ignore Python cache files
+*.pyo
+*.pyd
+*.pdb
+
+# Ignore logs
+*.log
+
+# Ignore test data or local data
+*.sqlite3
+
+# Ignore Git files
+.git
+.gitignore
+
+# Ignore IDE/editor config files
+.vscode/
+.idea/
+*.swp
+*.swo
