@@ -16,7 +16,7 @@ old_args=$@
 # Check if pm2 is installed
 if ! command -v pm2 &> /dev/null
 then
-    echo "pm2 could not be found. To install see: https://pm2.keymetrics.io/docs/usage/quick-start/"
+    echo "pm2 could not be found. To install: sudo npm install -g pm2"
     exit 1
 fi
 
@@ -195,9 +195,9 @@ start_worker() {
     echo "module.exports = {
       apps : [{
         name   : '$proc_name_worker',
-        script : 'uvicorn',
+        script : 'python3',
         cwd    : './worker',
-        args   : 'app.main:app --host 0.0.0.0 --port 1235',
+        args   : '-m uvicorn app.main:app --host 0.0.0.0 --port 1235',
         interpreter: 'python3',
         min_uptime: '5m',
         max_restarts: '5'
