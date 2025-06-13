@@ -67,21 +67,42 @@ get_version_difference() {
 
 read_version_value() {
     echo "DEBUG: Reading version from $version_location" >&2
-    # Read each line in the file
-    while IFS= read -r line; do
-        echo "DEBUG: Reading line: $line" >&2
-        # Check if the line contains the variable name
-        if [[ "$line" == *"$version"* ]]; then
-            # Extract the value of the variable
-            local value=$(echo "$line" | awk -F '=' '{print $2}' | tr -d ' ')
-            echo "DEBUG: Extracted value before quote removal: $value" >&2
-            # Remove any quotes and return the value
-            value=$(echo "$value" | tr -d '"'"'")
-            echo "DEBUG: Final version value: $value" >&2
+    
+    # Check if file exists
+    if [[ ! -f "$version_location" ]]; then
+        echo "DEBUG: File $version_location does not exist" >&2
+        echo ""
+        return 1
+    fi
+    
+    # Read the entire file content (handles files without trailing newline)
+    local content=$(cat "$version_location")
+    echo "DEBUG: File content: '$content'" >&2
+    
+    # Check if content contains __version__
+    if [[ "$content" == *"__version__"* ]]; then
+        echo "DEBUG: Content contains __version__" >&2
+        
+        # Try to extract with double quotes
+        if echo "$content" | grep -q '__version__.*=.*".*"'; then
+            echo "DEBUG: Content matches pattern with double quotes" >&2
+            local value=$(echo "$content" | sed 's/.*__version__[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/')
+            echo "DEBUG: Extracted value: '$value'" >&2
             echo "$value"
             return 0
+        # Try to extract with single quotes
+        elif echo "$content" | grep -q "__version__.*=.*'.*'"; then
+            echo "DEBUG: Content matches pattern with single quotes" >&2
+            local value=$(echo "$content" | sed "s/.*__version__[[:space:]]*=[[:space:]]*'\([^']*\)'.*/\1/")
+            echo "DEBUG: Extracted value: '$value'" >&2
+            echo "$value"
+            return 0
+        else
+            echo "DEBUG: Content contains __version__ but doesn't match quote patterns" >&2
         fi
-    done < "$version_location"
+    else
+        echo "DEBUG: Content does not contain __version__" >&2
+    fi
 
     echo "DEBUG: No version found in file" >&2
     echo ""
@@ -301,13 +322,10 @@ if [ "$?" -eq 1 ]; then
 
             # If the file has been updated
             if version_less_than "$current_version" "$latest_version"; then
-                echo "DEBUG: Version comparison: current='$current_version', latest='$latest_version'" >&2
                 echo "Latest version: $latest_version"
                 echo "Current version: $current_version"
                 diff=$(get_version_difference $latest_version $current_version)
                 if [ "$diff" -eq 1 ]; then
-                    echo "Current validator version: $current_version"
-                    echo "Latest validator version: $latest_version"
 
                     # Pull latest changes
                     # Failed git pull will return a non-zero output
