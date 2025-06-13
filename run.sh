@@ -66,17 +66,24 @@ get_version_difference() {
 }
 
 read_version_value() {
+    echo "DEBUG: Reading version from $version_location" >&2
     # Read each line in the file
     while IFS= read -r line; do
+        echo "DEBUG: Reading line: $line" >&2
         # Check if the line contains the variable name
         if [[ "$line" == *"$version"* ]]; then
             # Extract the value of the variable
             local value=$(echo "$line" | awk -F '=' '{print $2}' | tr -d ' ')
-            strip_quotes $value
+            echo "DEBUG: Extracted value before quote removal: $value" >&2
+            # Remove any quotes and return the value
+            value=$(echo "$value" | tr -d '"'"'")
+            echo "DEBUG: Final version value: $value" >&2
+            echo "$value"
             return 0
         fi
     done < "$version_location"
 
+    echo "DEBUG: No version found in file" >&2
     echo ""
 }
 
@@ -210,7 +217,7 @@ start_worker() {
     pm2 start worker.config.js
 }
 
-# Function to start validator process
+# Function to start validator processß
 start_validator() {
     local validator_args_joined="$1"
     
@@ -274,6 +281,7 @@ echo "Validator PM2 process name: $proc_name_validator"
 
 # Get the current version locally
 current_version=$(read_version_value)
+echo "DEBUG: Current version after reading: '$current_version'" >&2
 
 # Start both processes initially
 start_worker
@@ -289,9 +297,11 @@ if [ "$?" -eq 1 ]; then
 
             # check value on github remotely
             latest_version=$(check_variable_value_on_github "graph-it-uk/HappyAI-subnet" "__init__.py" "__version__ ")
+            echo "DEBUG: Latest version from GitHub: '$latest_version'" >&2
 
             # If the file has been updated
-            if version_less_than $current_version $latest_version; then
+            if version_less_than "$current_version" "$latest_version"; then
+                echo "DEBUG: Version comparison: current='$current_version', latest='$latest_version'" >&2
                 echo "Latest version: $latest_version"
                 echo "Current version: $current_version"
                 diff=$(get_version_difference $latest_version $current_version)
@@ -333,7 +343,7 @@ if [ "$?" -eq 1 ]; then
                 fi
             else
                 echo "**Skipping update**"
-                echo "$current_version is the same as or more than $latest_version. You are likely running locally."
+                echo "$current_version is the same as or more than $latest_version."
             fi
         else
             echo "The installation does not appear to be done through Git."
