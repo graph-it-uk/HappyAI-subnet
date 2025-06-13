@@ -50,8 +50,11 @@ python app/neurons/miner.py --netuid N --subtensor.network finney --wallet.name 
 
 ### Start the Validator
 
-You can start the validator by running the following command:
+You can start the validator by running the following commands:
 
+```
+chmod +x run.sh
+```
 ```
 ./run.sh --netuid N --subtensor.network finney --wallet.name <your_wallet_name> --wallet.hotkey <your_hotkey> --logging.debug
 ```
