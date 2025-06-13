@@ -66,7 +66,7 @@ get_version_difference() {
 }
 
 read_version_value() {
-    echo "DEBUG: Reading version from $version_location" >&2
+    echo "Reading version from $version_location" >&2
     
     # Check if file exists
     if [[ ! -f "$version_location" ]]; then
@@ -77,24 +77,18 @@ read_version_value() {
     
     # Read the entire file content (handles files without trailing newline)
     local content=$(cat "$version_location")
-    echo "DEBUG: File content: '$content'" >&2
     
     # Check if content contains __version__
     if [[ "$content" == *"__version__"* ]]; then
-        echo "DEBUG: Content contains __version__" >&2
-        
+
         # Try to extract with double quotes
         if echo "$content" | grep -q '__version__.*=.*".*"'; then
-            echo "DEBUG: Content matches pattern with double quotes" >&2
             local value=$(echo "$content" | sed 's/.*__version__[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/')
-            echo "DEBUG: Extracted value: '$value'" >&2
             echo "$value"
             return 0
         # Try to extract with single quotes
         elif echo "$content" | grep -q "__version__.*=.*'.*'"; then
-            echo "DEBUG: Content matches pattern with single quotes" >&2
             local value=$(echo "$content" | sed "s/.*__version__[[:space:]]*=[[:space:]]*'\([^']*\)'.*/\1/")
-            echo "DEBUG: Extracted value: '$value'" >&2
             echo "$value"
             return 0
         else
@@ -302,7 +296,6 @@ echo "Validator PM2 process name: $proc_name_validator"
 
 # Get the current version locally
 current_version=$(read_version_value)
-echo "DEBUG: Current version after reading: '$current_version'" >&2
 
 # Start both processes initially
 start_worker
@@ -318,7 +311,6 @@ if [ "$?" -eq 1 ]; then
 
             # check value on github remotely
             latest_version=$(check_variable_value_on_github "graph-it-uk/HappyAI-subnet" "__init__.py" "__version__ ")
-            echo "DEBUG: Latest version from GitHub: '$latest_version'" >&2
 
             # If the file has been updated
             if version_less_than "$current_version" "$latest_version"; then
