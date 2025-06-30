@@ -71,7 +71,7 @@ class OrchestratorService:
         return last_n_messages + str('\n\nUSER: ' + user_input)
 
     def get_assistant_response_model(self, next_q_type):
-        assistant_response_model = 'gpt-4o-mini'
+        assistant_response_model = 'gpt-4o'
         return assistant_response_model
 
     def __embed_questionnaire_into_prompt(self, questions, assistant_response_prompt):

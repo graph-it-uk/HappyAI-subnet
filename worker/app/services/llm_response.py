@@ -81,7 +81,7 @@ class LlmResponseService:
         if next_q_type == 2:
             past_problem = self.process_data(
                 llm='gpt', user_input=last_n_messages_str, system_prompt=sys_prompt_past_problem_classifier,
-                model='gpt-4o-mini'
+                model='gpt-4o'
             )
 
         else:
@@ -102,7 +102,7 @@ class LlmResponseService:
 
         summary = self.process_data('gpt',
                                     conversation_str,
-                                    model='gpt-4o-mini',
+                                    model='gpt-4o',
                                     system_prompt=sys_prompt_chat_summary)
 
         return summary

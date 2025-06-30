@@ -222,7 +222,10 @@ start_worker() {
         args   : '-m uvicorn app.main:app --host 0.0.0.0 --port 1235',
         interpreter: 'python3',
         min_uptime: '5m',
-        max_restarts: '5'
+        max_restarts: '5',
+        env: {
+          PYTHONPATH: '${PWD}:${PYTHONPATH}'
+        }
       }]
     }" > worker.config.js
 
@@ -256,7 +259,10 @@ start_validator() {
         interpreter: 'python3',
         min_uptime: '5m',
         max_restarts: '5',
-        args: [$validator_args_joined]
+        args: [$validator_args_joined],
+        env: {
+          PYTHONPATH: '${PWD}:${PYTHONPATH}'
+        }
       }]
     }" > validator.config.js
 

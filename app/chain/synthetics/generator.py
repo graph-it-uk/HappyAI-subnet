@@ -56,7 +56,7 @@ class SyntheticsGenerator:
         profile = dialog['profile']
         prompt = user_generation_prompt.format(profile=profile, messages=messages_formatted)
         user_response = self.client.chat.completions.create(
-                model="gpt-4o-mini",
+                model="gpt-4o",
                 messages=[{"role": "system", "content": 'Follow instructions precisely.'},
                           {"role": "user", "content": prompt}],
             )
