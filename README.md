@@ -58,3 +58,12 @@ chmod +x run.sh
 ```
 ./run.sh --netuid N --subtensor.network finney --wallet.name <your_wallet_name> --wallet.hotkey <your_hotkey> --logging.debug
 ```
+
+Validators are asked to use OpenAI GPT-4o model for evaluation without changes in codebase.
+
+The setup script with autoapdate of code is suggested. Functional changes are to be announced in correspondent Bittensor discord channel.
+
+With no utilisation of fine-tuned self hosted models in the current phase, the subnet is not compute resource heavy. Miner/validator code could be hosted on simple CPU instance as t3.large:
+vCPUs: 2
+Memory: 8Gb
+Storage: 20Gb
