@@ -232,7 +232,7 @@ start_worker() {
     echo "Worker PM2 config:"
     cat worker.config.js
     
-    pm2 start worker.config.js
+    PYTHONPATH="${PWD}:${PYTHONPATH}" pm2 start "uvicorn app.main:app --host 0.0.0.0 --port 1235" --name validator_worker_process --cwd ./worker
 }
 
 # Function to start validator processß
