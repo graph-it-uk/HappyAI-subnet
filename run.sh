@@ -2,7 +2,7 @@
 
 # Initialize variables
 worker_script="uvicorn app.main:app --host 0.0.0.0 --port 1235"
-validator_script="app/neurons/validator.py"
+validator_script="app.neurons.validator"
 autoRunLoc=$(readlink -f "$0")
 proc_name_worker="validator_worker_process"
 proc_name_validator="validator_validator_process"
