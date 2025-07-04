@@ -115,7 +115,7 @@ start_validator() {
     echo "Validator PM2 config:"
     cat validator.config.js
     echo $validator_args_joined
-    PYTHONPATH="${PWD}:${PYTHONPATH}" pm2 start "python app/neurons/validator.py $validator_args_joined" --name validator_validator_process
+    PYTHONPATH="${PWD}:${PYTHONPATH}" pm2 start "python app.neurons.validator $validator_args_joined" --name validator_validator_process
 }
 
 # Function to restart both processes
