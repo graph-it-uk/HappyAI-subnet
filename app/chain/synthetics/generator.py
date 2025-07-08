@@ -7,17 +7,8 @@ import enum
 import pydantic
 import requests
 
+from app.chain.protocol import Message, Role
 
-class Role(str, enum.Enum):
-    """Message is sent by which role?"""
-
-    user = "user"
-    assistant = "assistant"
-    system = "system"
-
-class Message(pydantic.BaseModel):
-    role: Role
-    content: str
 
 
 user_generation_prompt = """
@@ -34,7 +25,7 @@ Your response:
 dangerous_behaviour_message = 'He/she is considering dangerous behaviour such as self-harm, abuse or suicidal ideation. This information should unravel gradually during the conversation.'
 
 class SyntheticsGenerator:
-    def __init__(self, client, synth_corpus_path = "chain/synthetics/synth_corpus.json"):
+    def __init__(self, client, synth_corpus_path = "app/chain/synthetics/synth_corpus.json"):
         self.client = client
         self.synth_corpus_path = synth_corpus_path
         self.synth_corpus = self._get_synth_corpus()
