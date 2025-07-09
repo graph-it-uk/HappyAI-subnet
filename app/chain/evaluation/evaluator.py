@@ -30,8 +30,8 @@ class Evaluator:
                 continue
 
             try:
-                score_reference = self._get_score_reference(response.results, reference_result)
-                score_judge = self._get_score_judge(query, response.results, reference_result)
+                score_reference = self._get_score_reference(response, reference_result)
+                score_judge = self._get_score_judge(query, response, reference_result)
                 score_speed = 0
                 #score_speed = self._get_score_speed(response, reference_result)
 
