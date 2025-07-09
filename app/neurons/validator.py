@@ -38,7 +38,6 @@ class Validator(BaseValidatorNeuron):
         self.evaluator = Evaluator(llm_client, self.worker)
         self.bad_miners_register = {}
 
-
     async def forward(self):
         """
         Validator forward pass. Consists of:
@@ -76,6 +75,9 @@ class Validator(BaseValidatorNeuron):
 
             rewards, reference_response = self.evaluator.evaluate(query, responses)
             for idx, uid in enumerate(miner_uids):
+                print(f"AXON FOR WALLET: {self.metagraph.axons[uid]}")
+
+                print(f"AXON FOR WALLET DICT: {dict(self.metagraph.axons[uid])}")
                 if rewards[idx] < BAD_MINER_THRESHOLD:
                     self.bad_miners_register[(uid,
                                               self.metagraph.axons[uid].wallet.hotkey)] = self.bad_miners_register.get(uid, 0) + 1
@@ -96,6 +98,7 @@ class Validator(BaseValidatorNeuron):
         except Exception as e:
             bt.logging.error(f"Error during forward: {e}")
             bt.logging.debug(print_exception(type(e), e, e.__traceback__))
+
 
     def run(self):
         # Check that validator is registered on the network.
