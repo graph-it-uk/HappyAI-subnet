@@ -7,18 +7,7 @@ import enum
 import pydantic
 import requests
 
-
-class Role(str, enum.Enum):
-    """Message is sent by which role?"""
-
-    user = "user"
-    assistant = "assistant"
-    system = "system"
-
-class Message(pydantic.BaseModel):
-    role: Role
-    content: str
-
+from app.chain.protocol import Role, Message
 
 user_generation_prompt = """
 You take part in a role-play game to help the training of a psychologists.
