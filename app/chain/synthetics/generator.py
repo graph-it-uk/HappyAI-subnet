@@ -7,8 +7,8 @@ import enum
 import pydantic
 import requests
 
-from app.chain.protocol import Message, Role
 
+from app.chain.protocol import Role, Message
 
 
 user_generation_prompt = """
