@@ -29,7 +29,7 @@ class CompletionSynapse(bt.Synapse):
     """
     """
     request_id: int
-    messages: list[Message]
+    messages: List[Message]
     user_input: str
 
     version: Optional[Version] = None

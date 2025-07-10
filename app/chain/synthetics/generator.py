@@ -7,7 +7,9 @@ import enum
 import pydantic
 import requests
 
+
 from app.chain.protocol import Role, Message
+
 
 user_generation_prompt = """
 You take part in a role-play game to help the training of a psychologists.
