@@ -93,7 +93,7 @@ class Validator(BaseValidatorNeuron):
             bt.logging.info(f"Scored responses: {rewards} for {miner_uids}")
             self.update_scores(rewards, miner_uids)
             bt.logging.info(f"All rewards: {rewards}")
-            time.sleep(300)
+            time.sleep(600)
 
         except Exception as e:
             bt.logging.error(f"Error during forward: {e}")
