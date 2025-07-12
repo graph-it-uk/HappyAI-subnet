@@ -358,7 +358,7 @@ class Judge:
     def _run_llm_request(self, prompt):
         try:
             response = self.client.chat.completions.create(
-                model="gpt-4o",
+                model="gpt-4o-mini",
                 messages=[
                     {"role": "developer", "content": "Follow instructions precisely."},
                     {
@@ -415,7 +415,7 @@ class Judge:
             option_1=option_1,
             option_2=option_2)
         evaluation_response = self.client.chat.completions.create(
-            model="gpt-4o",
+            model="gpt-4o-mini",
             messages=[
                 {"role": "developer", "content": "Follow instructions precisely."},
                 {
