@@ -1,0 +1,39 @@
+{
+  "os":  "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+  "python":  "CPython 3.12.3",
+  "startedAt":  "2025-07-17T06:12:47.954813Z",
+  "program":  "/home/rataski/HappyAI-subnet/test.ipynb",
+  "codePath":  "test.ipynb",
+  "codePathLocal":  "test.ipynb",
+  "git":  {
+    "remote":  "https://github.com/graph-it-uk/HappyAI-subnet.git",
+    "commit":  "11454318b35e3bc5ee25c002f6f19a5775437760"
+  },
+  "email":  "v.butkov@graph-it.co.uk",
+  "root":  "/home/rataski/HappyAI-subnet",
+  "host":  "DESKTOP-19N3ADV",
+  "executable":  "/home/rataski/HappyAI-subnet/.venv/bin/python",
+  "cpu_count":  6,
+  "cpu_count_logical":  12,
+  "gpu":  "NVIDIA GeForce RTX 3080 Ti",
+  "gpu_count":  1,
+  "disk":  {
+    "/":  {
+      "total":  "1081101176832",
+      "used":  "48544428032"
+    }
+  },
+  "memory":  {
+    "total":  "16671518720"
+  },
+  "gpu_nvidia":  [
+    {
+      "name":  "NVIDIA GeForce RTX 3080 Ti",
+      "memoryTotal":  "12884901888",
+      "architecture":  "Ampere",
+      "uuid":  "GPU-804745e1-bfca-45f9-a6cf-0177391df60c"
+    }
+  ],
+  "cudaVersion":  "12.8",
+  "writerId":  "p0rtpzecvusbh8yy13jzwb2wlax8rlo4"
+}

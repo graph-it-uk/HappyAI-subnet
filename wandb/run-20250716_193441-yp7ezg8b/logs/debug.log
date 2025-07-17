@@ -1,0 +1,46 @@
+2025-07-16 19:34:41,342 INFO    MainThread:9770 [wandb_setup.py:_flush():80] Current SDK version is 0.21.0
+2025-07-16 19:34:41,342 INFO    MainThread:9770 [wandb_setup.py:_flush():80] Configure stats pid to 9770
+2025-07-16 19:34:41,342 INFO    MainThread:9770 [wandb_setup.py:_flush():80] Loading settings from /home/rataski/.config/wandb/settings
+2025-07-16 19:34:41,342 INFO    MainThread:9770 [wandb_setup.py:_flush():80] Loading settings from /home/rataski/HappyAI-subnet/wandb/settings
+2025-07-16 19:34:41,342 INFO    MainThread:9770 [wandb_setup.py:_flush():80] Loading settings from environment variables
+2025-07-16 19:34:41,342 INFO    MainThread:9770 [wandb_init.py:setup_run_log_directory():703] Logging user logs to /home/rataski/HappyAI-subnet/wandb/run-20250716_193441-yp7ezg8b/logs/debug.log
+2025-07-16 19:34:41,342 INFO    MainThread:9770 [wandb_init.py:setup_run_log_directory():704] Logging internal logs to /home/rataski/HappyAI-subnet/wandb/run-20250716_193441-yp7ezg8b/logs/debug-internal.log
+2025-07-16 19:34:41,342 INFO    MainThread:9770 [wandb_init.py:monkeypatch_ipython():622] configuring jupyter hooks <wandb.sdk.wandb_init._WandbInit object at 0x7895072d0470>
+2025-07-16 19:34:41,342 INFO    MainThread:9770 [wandb_init.py:init():830] calling init triggers
+2025-07-16 19:34:41,343 INFO    MainThread:9770 [wandb_init.py:init():835] wandb.init called with sweep_config: {}
+config: {'_wandb': {}}
+2025-07-16 19:34:41,343 INFO    MainThread:9770 [wandb_init.py:init():871] starting backend
+2025-07-16 19:34:41,552 INFO    MainThread:9770 [wandb_init.py:init():874] sending inform_init request
+2025-07-16 19:34:41,557 INFO    MainThread:9770 [wandb_init.py:init():882] backend started and connected
+2025-07-16 19:34:41,560 INFO    MainThread:9770 [wandb_run.py:_label_probe_notebook():1304] probe notebook
+2025-07-16 19:34:41,563 INFO    MainThread:9770 [wandb_init.py:init():953] updated telemetry
+2025-07-16 19:34:41,589 INFO    MainThread:9770 [wandb_init.py:init():977] communicating run to backend with 90.0 second timeout
+2025-07-16 19:34:42,275 INFO    MainThread:9770 [wandb_init.py:init():1029] starting run threads in backend
+2025-07-16 19:34:42,401 INFO    MainThread:9770 [wandb_run.py:_console_start():2458] atexit reg
+2025-07-16 19:34:42,401 INFO    MainThread:9770 [wandb_run.py:_redirect():2306] redirect: wrap_raw
+2025-07-16 19:34:42,402 INFO    MainThread:9770 [wandb_run.py:_redirect():2375] Wrapping output streams.
+2025-07-16 19:34:42,402 INFO    MainThread:9770 [wandb_run.py:_redirect():2398] Redirects installed.
+2025-07-16 19:34:42,404 INFO    MainThread:9770 [wandb_init.py:init():1075] run started, returning control to user process
+2025-07-16 19:34:42,404 INFO    MainThread:9770 [wandb_init.py:_post_run_cell_hook():592] [no run ID] resuming backend
+2025-07-16 19:34:46,179 INFO    MainThread:9770 [jupyter.py:save_ipynb():404] [no run ID] not saving jupyter notebook
+2025-07-16 19:34:46,180 INFO    MainThread:9770 [wandb_init.py:_pre_run_cell_hook():581] [no run ID] pausing backend
+2025-07-16 19:34:46,181 INFO    MainThread:9770 [wandb_init.py:_post_run_cell_hook():592] [no run ID] resuming backend
+2025-07-16 19:35:08,013 INFO    MainThread:9770 [jupyter.py:save_ipynb():404] [no run ID] not saving jupyter notebook
+2025-07-16 19:35:08,014 INFO    MainThread:9770 [wandb_init.py:_pre_run_cell_hook():581] [no run ID] pausing backend
+2025-07-16 19:35:08,015 INFO    MainThread:9770 [wandb_init.py:_post_run_cell_hook():592] [no run ID] resuming backend
+2025-07-16 19:35:10,083 INFO    MainThread:9770 [jupyter.py:save_ipynb():404] [no run ID] not saving jupyter notebook
+2025-07-16 19:35:10,083 INFO    MainThread:9770 [wandb_init.py:_pre_run_cell_hook():581] [no run ID] pausing backend
+2025-07-16 19:35:10,088 INFO    MainThread:9770 [wandb_init.py:setup_run_log_directory():703] Logging user logs to /home/rataski/HappyAI-subnet/wandb/run-20250716_193510-yp7ezg8b/logs/debug.log
+2025-07-16 19:35:10,088 INFO    MainThread:9770 [wandb_init.py:setup_run_log_directory():704] Logging internal logs to /home/rataski/HappyAI-subnet/wandb/run-20250716_193510-yp7ezg8b/logs/debug-internal.log
+2025-07-16 19:35:10,088 INFO    MainThread:9770 [wandb_init.py:init():830] calling init triggers
+2025-07-16 19:35:10,088 INFO    MainThread:9770 [wandb_init.py:init():835] wandb.init called with sweep_config: {}
+config: {'_wandb': {}}
+2025-07-16 19:35:10,089 INFO    MainThread:9770 [wandb_run.py:_finish():2224] finishing run bellzebul-igor-sikorsky-kyiv-polytechnic-institute/Eval_logs/yp7ezg8b
+2025-07-16 19:35:10,091 INFO    MainThread:9770 [jupyter.py:save_ipynb():404] not saving jupyter notebook
+2025-07-16 19:35:10,091 INFO    MainThread:9770 [wandb_init.py:_jupyter_teardown():607] cleaning up jupyter logic
+2025-07-16 19:35:10,091 INFO    MainThread:9770 [wandb_run.py:_atexit_cleanup():2423] got exitcode: 0
+2025-07-16 19:35:10,091 INFO    MainThread:9770 [wandb_run.py:_restore():2405] restore
+2025-07-16 19:35:10,091 INFO    MainThread:9770 [wandb_run.py:_restore():2411] restore done
+2025-07-16 19:35:11,093 INFO    MainThread:9770 [wandb_run.py:_footer_history_summary_info():3903] rendering history
+2025-07-16 19:35:11,094 INFO    MainThread:9770 [wandb_run.py:_footer_history_summary_info():3935] rendering summary
+2025-07-16 19:35:11,094 INFO    MainThread:9770 [wandb_run.py:_footer_sync_info():3864] logging synced files

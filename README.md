@@ -30,6 +30,14 @@ cp .env.template .env
 ```
 The OpenAI keys are to be added to .env file
 
+For validators:\
+You need to get from developers:
+```
+SUPABASE_URL=""
+SUPABASE_KEY=""
+```
+And also set ```SUPABASE_MODE=True```
+
 
 ### Start the Miner
 

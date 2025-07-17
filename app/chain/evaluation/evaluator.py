@@ -1,10 +1,13 @@
 import json
 import random
+import os
+from dotenv import load_dotenv
 
 import openai
 import torch
 
 from scipy import spatial
+from supabase import create_client
 
 REFERENCE_WEIGHT = 0.2
 JUDGE_WEIGHT = 0.8
@@ -13,10 +16,35 @@ REFERENCE_SPEED_TOKENS_PER_SECOND = 1
 
 
 class Evaluator:
+
+    _instance = None
+    _initialized = False
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+  
     def __init__(self, client, worker):
+        if self._initialized:
+            return
+
         self.judge = Judge(client)
         self.reference_evaluator = ReferenceEvaluator()
         self.worker = worker
+        load_dotenv()
+        self.supabase_mode = eval(os.environ.get("SUPABASE_MODE"))
+        if self.supabase_mode:
+          self.supabase = create_client(
+              supabase_url=os.environ.get("SUPABASE_URL"),
+              supabase_key=os.environ.get("SUPABASE_KEY")
+          )
+          self.user_id = os.getpid()
+
+
+        self._initialized = True
+
+
 
     def evaluate(self, query, responses):
 
@@ -30,12 +58,22 @@ class Evaluator:
                 continue
 
             try:
-                score_reference = self._get_score_reference(response, reference_result)
-                score_judge = self._get_score_judge(query, response, reference_result)
+                score_reference = self.reference_evaluator.process(response, reference_result)
+                score_judge = self.judge.evaluate(query, response, reference_result)
                 score_speed = 0
                 #score_speed = self._get_score_speed(response, reference_result)
 
                 score = self._combine_scores(score_reference, score_judge, score_speed)
+                if self.supabase_mode:
+                  self.supabase.table('evaluations').insert({
+                      "user_id": self.user_id,
+                      "query": query,
+                      "response": response,
+                      "reference_result": reference_result,
+                      "score_semantic": float(score_reference),
+                      "score_judge": float(score_judge),
+                      "combo_score": float(score)
+                  }).execute()
                 scores[i] = score
             except Exception as e:
                 print('FAILED EVALUATING:', e)
@@ -57,11 +95,8 @@ class Evaluator:
             print(f"Error in streaming text from the server: {e}.")
             return None
 
-    def _get_score_reference(self, result, reference_result):
-        return self.reference_evaluator.process(result, reference_result)
 
-    def _get_score_judge(self, query, result, reference_result):
-        return self.judge.evaluate(query, result, reference_result)
+
 
     def _get_score_speed(self, response_duration, reference_result):
         return len(reference_result)*REFERENCE_SPEED_TOKENS_PER_SECOND/response_duration

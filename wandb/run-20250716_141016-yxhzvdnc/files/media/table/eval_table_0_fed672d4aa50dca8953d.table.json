@@ -1,0 +1,1 @@
+{"columns": ["query", "response", "reference_result", "score_semantic", "score_judge", "combo_score"], "data": [["Hello, world!", {"response": "Hello, world!", "reference_result": "Hello, world!"}, "Hello, world!", 1, 1, 1]]}
