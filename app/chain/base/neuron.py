@@ -86,11 +86,22 @@ class BaseNeuron(ABC):
     @abstractmethod
     def run(self): ...
 
-    def sync(self):
+    def sync(self, supabase = None):
         """
         Wrapper for synchronizing the state of the network for the given miner or validator.
         """
         # Ensure miner or validator hotkey is still registered on the network.
+        if supabase is not None:
+            try:
+                supabase.table('monitoring').insert({
+                    "uid": self.uid,
+                    "operation": "sync",
+                    "data": {"should_set_weights": self.should_set_weights(),
+                             "should_sync_metagraph": self.should_sync_metagraph(),},
+                   }).execute()
+            except Exception as e:
+                bt.logging.warning(f"Error reporting scores: {e}")
+
         self.check_registered()
 
         if self.should_sync_metagraph():
