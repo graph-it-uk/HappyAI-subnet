@@ -85,7 +85,7 @@ class Evaluator:
                     "user_id": self.user_id,
                     "query": query.user_input,
                     "response": response,
-                    "reference_result": json.dumps(reference_result),
+                    "reference_result": reference_result,
                     "score_semantic": float(score_reference),
                     "score_judge": float(score_judge),
                     "combo_score": float(score)
@@ -96,7 +96,7 @@ class Evaluator:
                       "user_id": self.user_id,
                       "query": query.user_input,
                       "response": response,
-                      "reference_result": json.dumps(reference_result),
+                      "reference_result": reference_result,
                       "score_semantic": float(score_reference),
                       "score_judge": float(score_judge),
                       "combo_score": float(score)
