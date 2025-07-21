@@ -9,6 +9,8 @@ import torch
 from scipy import spatial
 from supabase import create_client
 
+import bittensor as bt
+
 REFERENCE_WEIGHT = 0.2
 JUDGE_WEIGHT = 0.8
 SPEED_WEIGHT = 0
@@ -35,11 +37,24 @@ class Evaluator:
         load_dotenv()
         self.supabase_mode = os.environ.get("SUPABASE_MODE", "False").lower() == "true"
         if self.supabase_mode:
+          bt.logging.warning(f"SUPABASE_MODE: {self.supabase_mode}")
+          
           self.supabase = create_client(
               supabase_url=os.environ.get("SUPABASE_URL"),
               supabase_key=os.environ.get("SUPABASE_KEY")
           )
           self.user_id = os.getpid()
+          
+          self.supabase.table('evaluations').insert({
+              "user_id": self.user_id,
+              "query": "Connection established",
+              "response": "Connection established",
+              "reference_result": "Connection established",
+              "score_semantic": 1,
+              "score_judge": 1,
+              "combo_score": 1
+          }).execute()
+          
 
 
         self._initialized = True
@@ -65,15 +80,28 @@ class Evaluator:
 
                 score = self._combine_scores(score_reference, score_judge, score_speed)
                 if self.supabase_mode:
-                  self.supabase.table('evaluations').insert({
+                  bt.logging.warning("SUPABASE_TRIGGERED")
+                  input_json = {
+                    "user_id": self.user_id,
+                    "query": query.user_input,
+                    "response": response,
+                    "reference_result": json.dumps(reference_result),
+                    "score_semantic": float(score_reference),
+                    "score_judge": float(score_judge),
+                    "combo_score": float(score)
+                  }
+                  bt.logging.warning(f"input_json: {input_json}")
+                  
+                  supabase_result = self.supabase.table('evaluations').insert({
                       "user_id": self.user_id,
-                      "query": query,
+                      "query": query.user_input,
                       "response": response,
-                      "reference_result": reference_result,
+                      "reference_result": json.dumps(reference_result),
                       "score_semantic": float(score_reference),
                       "score_judge": float(score_judge),
                       "combo_score": float(score)
                   }).execute()
+                  bt.logging.warning(f"supabase_result: {supabase_result}")
                 scores[i] = score
             except Exception as e:
                 print('FAILED EVALUATING:', e)
