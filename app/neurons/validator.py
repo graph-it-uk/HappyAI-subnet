@@ -15,6 +15,7 @@ from app.chain.synthetics.generator import SyntheticsGenerator
 
 from app.chain.utils.uids import get_miners_uids
 from app.chain.worker import Worker
+from supabase import create_client
 
 BAD_MINER_THRESHOLD = -5
 MAX_BAD_RESPONSES_TOLERANCE = 2
