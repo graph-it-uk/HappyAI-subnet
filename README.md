@@ -30,6 +30,14 @@ cp .env.template .env
 ```
 The OpenAI keys are to be added to .env file
 
+For validators:\
+You need to get from developers:
+```
+SUPABASE_URL=""
+SUPABASE_KEY=""
+```
+And also set ```SUPABASE_MODE=True```
+
 
 ### Start the Miner
 
@@ -59,7 +67,7 @@ chmod +x run.sh
 ./run.sh --netuid N --subtensor.network finney --wallet.name <your_wallet_name> --wallet.hotkey <your_hotkey> --logging.debug
 ```
 
-Validators are asked to use OpenAI GPT-4o model for evaluation without changes in codebase.
+Validators are asked to use OpenAI GPT-4o-mini model for evaluation without changes in codebase.
 
 The setup script with autoapdate of code is suggested. Functional changes are to be announced in correspondent Bittensor discord channel.
 

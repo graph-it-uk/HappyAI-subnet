@@ -15,8 +15,9 @@ from app.chain.synthetics.generator import SyntheticsGenerator
 
 from app.chain.utils.uids import get_miners_uids
 from app.chain.worker import Worker
+from supabase import create_client
 
-BAD_MINER_THRESHOLD = 0.02
+BAD_MINER_THRESHOLD = -5
 MAX_BAD_RESPONSES_TOLERANCE = 2
 
 
@@ -37,6 +38,13 @@ class Validator(BaseValidatorNeuron):
         self.worker = Worker(worker_url=os.environ["WORKER_URL"], worker_port=os.environ["WORKER_PORT"])
         self.evaluator = Evaluator(llm_client, self.worker)
         self.bad_miners_register = {}
+        self.supabase_mode = os.environ.get("SUPABASE_MODE", "False").lower() == "true"
+        self.supabase = None
+        if self.supabase_mode:
+            self.supabase = create_client(
+                supabase_url=os.environ.get("SUPABASE_URL"),
+                supabase_key=os.environ.get("SUPABASE_KEY")
+            )
 
     async def forward(self):
         """
@@ -92,8 +100,18 @@ class Validator(BaseValidatorNeuron):
 
             bt.logging.info(f"Scored responses: {rewards} for {miner_uids}")
             self.update_scores(rewards, miner_uids)
+            if self.supabase_mode:
+                try:
+                    #temporary measure to debug the incentive distribution situation
+                    self.supabase.table('monitoring').insert({
+                        "uid": self.uid,
+                        "operation": "update_scores",
+                        "data": {"scores": self.scores.tolist()},
+                    }).execute()
+                except Exception as e:
+                    bt.logging.warning(f"Error reporting scores: {e}")
             bt.logging.info(f"All rewards: {rewards}")
-            time.sleep(300)
+            time.sleep(600)
 
         except Exception as e:
             bt.logging.error(f"Error during forward: {e}")
@@ -121,7 +139,7 @@ class Validator(BaseValidatorNeuron):
                     break
 
                 # Sync metagraph and potentially set weights.
-                self.sync()
+                self.sync(self.supabase)
 
                 self.step += 1
 

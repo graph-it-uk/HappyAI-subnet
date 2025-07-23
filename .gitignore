@@ -2,4 +2,7 @@
 .DS_Store
 .idea/
 *__pycache__*
+.venv/wandb/
 .venv/
+wandb/
+test.ipynb
