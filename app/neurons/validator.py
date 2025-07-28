@@ -96,21 +96,50 @@ class Validator(BaseValidatorNeuron):
 
             self.synthetics_generator.update_dialog(synthetic_dialog['dialog_id'], reference_response)
             
-            rewards = rewards / (rewards.max() + 1e-5)
+            bt.logging.debug(f"Raw rewards before normalization: {rewards}")
+            bt.logging.debug(f"Rewards max: {rewards.max()}")
+            bt.logging.debug(f"Rewards min: {rewards.min()}")
+            
+            # Don't normalize if all rewards are zero or very small
+            if rewards.max() > 1e-5:
+                rewards = rewards / (rewards.max() + 1e-5)
+            else:
+                bt.logging.warning("All rewards are very small or zero, skipping normalization")
+            
+            bt.logging.debug(f"Normalized rewards: {rewards}")
+            bt.logging.debug(f"Normalized rewards max: {rewards.max()}")
+            bt.logging.debug(f"Normalized rewards min: {rewards.min()}")
 
             bt.logging.info(f"Scored responses: {rewards} for {miner_uids}")
             self.update_scores(rewards, miner_uids)
+            
             if self.supabase_mode:
                 try:
-                    #temporary measure to debug the incentive distribution situation
+                    # Enhanced debugging data for Supabase
+                    debug_data = {
+                        "scores": self.scores.tolist(),
+                        "raw_rewards": rewards.tolist() if hasattr(rewards, 'tolist') else rewards,
+                        "miner_uids": miner_uids,
+                        "rewards_max": float(rewards.max()),
+                        "rewards_min": float(rewards.min()),
+                        "non_zero_scores_count": int((self.scores > 0).sum()),
+                        "scores_sum": float(self.scores.sum()),
+                        "alpha": self.config.neuron.moving_average_alpha,
+                        "step": self.step
+                    }
+                    
                     self.supabase.table('monitoring').insert({
                         "uid": self.uid,
                         "operation": "update_scores",
-                        "data": {"scores": self.scores.tolist()},
+                        "data": debug_data,
                     }).execute()
                 except Exception as e:
                     bt.logging.warning(f"Error reporting scores: {e}")
+            
             bt.logging.info(f"All rewards: {rewards}")
+            bt.logging.debug(f"Current scores after update: {self.scores}")
+            bt.logging.debug(f"Non-zero scores count: {(self.scores > 0).sum()}")
+            bt.logging.debug(f"Scores sum: {self.scores.sum()}")
             time.sleep(600)
 
         except Exception as e:

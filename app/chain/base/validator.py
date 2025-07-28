@@ -203,9 +203,43 @@ class BaseValidatorNeuron(BaseNeuron):
 
         # Calculate the average reward for each uid across non-zero values.
         # Replace any NaN values with 0.
-        raw_weights = torch.nn.functional.normalize(self.scores, p=1, dim=0).numpy()
+        bt.logging.debug(f"Original scores before normalization: {self.scores}")
+        bt.logging.debug(f"Scores sum: {self.scores.sum()}")
+        bt.logging.debug(f"Non-zero scores count: {(self.scores > 0).sum()}")
+        
+        # Only normalize if we have non-zero scores
+        if self.scores.sum() > 0:
+            raw_weights = torch.nn.functional.normalize(self.scores, p=1, dim=0).numpy()
+        else:
+            bt.logging.warning("All scores are zero! Using small random weights to break symmetry.")
+            # Use small random weights instead of uniform to break symmetry
+            import numpy as np
+            raw_weights = (np.random.random(len(self.scores)) * 0.1 + 0.01).astype(np.float32)
+            raw_weights = raw_weights / raw_weights.sum()  # Normalize to sum to 1
 
         bt.logging.debug("raw_weights", raw_weights)
+        
+        # Log weight setting process to Supabase if available
+        if hasattr(self, 'supabase_mode') and self.supabase_mode and hasattr(self, 'supabase'):
+            try:
+                weight_debug_data = {
+                    "scores": self.scores.tolist(),
+                    "scores_sum": float(self.scores.sum()),
+                    "non_zero_scores_count": int((self.scores > 0).sum()),
+                    "raw_weights": raw_weights.tolist(),
+                    "raw_weights_sum": float(raw_weights.sum()),
+                    "raw_weights_max": float(raw_weights.max()),
+                    "raw_weights_min": float(raw_weights.min()),
+                    "step": getattr(self, 'step', 0)
+                }
+                
+                self.supabase.table('monitoring').insert({
+                    "uid": getattr(self, 'uid', 0),
+                    "operation": "set_weights",
+                    "data": weight_debug_data,
+                }).execute()
+            except Exception as e:
+                bt.logging.warning(f"Error reporting weight data to Supabase: {e}")
         bt.logging.debug("raw_weight_uids", self.metagraph.uids)
         # Process the raw weights to final_weights via subtensor limitations.
         (
@@ -289,12 +323,17 @@ class BaseValidatorNeuron(BaseNeuron):
             # Replace any NaN values in rewards with 0.
             rewards = torch.nan_to_num(rewards, 0)
 
+        bt.logging.debug(f"Input rewards: {rewards}")
+        bt.logging.debug(f"Input uids: {uids}")
+        bt.logging.debug(f"Current scores before update: {self.scores}")
+        bt.logging.debug(f"Alpha (moving_average_alpha): {self.config.neuron.moving_average_alpha}")
+
         # Compute forward pass rewards, assumes uids are mutually exclusive.
         # shape: [ metagraph.n ]
         scattered_rewards: torch.FloatTensor = self.scores.scatter(
             0, uids.clone().detach().to(self.device), rewards
         ).to(self.device)
-        bt.logging.debug(f"Scattered rewards: {rewards}")
+        bt.logging.debug(f"Scattered rewards: {scattered_rewards}")
 
         # Update scores with rewards produced by this step.
         # shape: [ metagraph.n ]
@@ -303,6 +342,7 @@ class BaseValidatorNeuron(BaseNeuron):
             1 - alpha
         ) * self.scores.to(self.device)
         bt.logging.debug(f"Updated moving avg scores: {self.scores}")
+        bt.logging.debug(f"Non-zero scores after update: {(self.scores > 0).sum()}")
 
     def save_state(self):
         """Saves the state of the validator to a file."""
