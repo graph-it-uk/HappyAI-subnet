@@ -18,6 +18,12 @@ def check_uid_availability(
     # Filter non serving axons.
     if not metagraph.axons[uid].is_serving:
         return False
+    
+    # Filter out miners with invalid IP addresses (0.0.0.0 indicates non-working miners)
+    axon_ip = metagraph.axons[uid].ip
+    if axon_ip == "0.0.0.0" or axon_ip == "127.0.0.1" or axon_ip == "localhost":
+        return False
+    
     # Filter validator permit > 1024 stake.
     if metagraph.validator_permit[uid]:
         if metagraph.S[uid] > vpermit_tao_limit:
