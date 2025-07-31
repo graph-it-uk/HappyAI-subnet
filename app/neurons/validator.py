@@ -58,14 +58,15 @@ class Validator(BaseValidatorNeuron):
         """
         try:
             miner_uids = get_miners_uids(self, k=self.config.neuron.sample_size)
-
+            bt.logging.warning(f"DEBUG: Selected miner UIDs: {miner_uids}")
+            
             synthetic_dialog = await self.synthetics_generator.generate()
-
             query = CompletionSynapse(request_id = int(datetime.now().timestamp()*1000),
-                                      messages = synthetic_dialog['messages'][:-1],
-                                      user_input = synthetic_dialog['messages'][-1].content)
+                                    messages = synthetic_dialog['messages'][:-1],
+                                    user_input = synthetic_dialog['messages'][-1].content)
             bt.logging.trace('Generated synthetic query!')
             bt.logging.trace(f'query: {query}')
+            
             # The dendrite client queries the network.
             responses = await self.dendrite(
                 # Send the query to selected miner axons in the network.
@@ -78,10 +79,14 @@ class Validator(BaseValidatorNeuron):
             bt.logging.trace(f'Miners: {miner_uids}')
             bt.logging.trace(f'Responses: {responses}')
 
+            bt.logging.warning(f"DEBUG: Got {len(responses)} responses")
+            for i, (uid, response) in enumerate(zip(miner_uids, responses)):
+                has_response = bool(response and hasattr(response, 'response') and response.response)
+                bt.logging.warning(f"DEBUG: Miner {uid}: response_exists={has_response}")
 
             # Log the results for monitoring purposes.
             bt.logging.trace(f"Received responses: {responses}")
-
+            
             # Pre-filter non-working miners to save evaluation costs
             working_miner_indices = []
             non_working_miner_indices = []
@@ -90,65 +95,114 @@ class Validator(BaseValidatorNeuron):
                 axon_ip = self.metagraph.axons[uid].ip
                 if axon_ip == "0.0.0.0" or axon_ip == "127.0.0.1" or axon_ip == "localhost":
                     non_working_miner_indices.append(idx)
-                    bt.logging.info(f"Skipping evaluation for non-working miner UID {uid} (IP: {axon_ip})")
+                    bt.logging.warning(f"DEBUG: Non-working miner UID {uid} (IP: {axon_ip})")
                 else:
                     working_miner_indices.append(idx)
+                    bt.logging.warning(f"DEBUG: Working miner UID {uid} (IP: {axon_ip})")
+            
+            bt.logging.warning(f"DEBUG: Working={len(working_miner_indices)}, Non-working={len(non_working_miner_indices)}")
             
             # Only evaluate working miners
             working_responses = [responses[i] for i in working_miner_indices] if working_miner_indices else []
             
+            bt.logging.warning(f"DEBUG: Evaluating {len(working_responses)} working responses")
+            
             if working_responses:
                 working_rewards, reference_response = self.evaluator.evaluate(query, working_responses)
+                bt.logging.warning(f"DEBUG: working_rewards from evaluator: {working_rewards}")
+                bt.logging.warning(f"DEBUG: working_rewards min={working_rewards.min()}, max={working_rewards.max()}")
             else:
                 working_rewards = torch.tensor([])
                 reference_response = None
+                bt.logging.warning(f"DEBUG: No working responses, empty tensor")
             
             # Create final scores array with -1 for non-working miners
             rewards = torch.zeros(len(miner_uids))
+            bt.logging.warning(f"DEBUG: Initialized rewards tensor: {rewards}")
             
             # Add normalized working miner scores (already normalized in evaluator)
             if working_rewards.numel() > 0:
                 for i, working_idx in enumerate(working_miner_indices):
                     rewards[working_idx] = working_rewards[i]
+                    bt.logging.warning(f"DEBUG: Set working miner {miner_uids[working_idx]} reward = {working_rewards[i]}")
             
             # Add -1 for non-working miners
             for idx in non_working_miner_indices:
                 rewards[idx] = -1.0
-                bt.logging.info(f"Set non-working miner to -1.0 score")
+                bt.logging.warning(f"DEBUG: Set non-working miner {miner_uids[idx]} reward = -1.0")
             
-            bt.logging.debug(f"Final scores: {rewards}")
+            bt.logging.warning(f"DEBUG: Raw rewards after assignment: {rewards}")
             
             # Apply bad miner penalties (if any)
+            penalties_applied = 0
             for idx, uid in enumerate(miner_uids):
+                old_reward = rewards[idx].clone()
+                
                 if rewards[idx] < BAD_MINER_THRESHOLD:
-                    self.bad_miners_register[(uid,
-                                              self.metagraph.axons[uid].wallet.hotkey)] = self.bad_miners_register.get(uid, 0) + 1
-
-                if self.bad_miners_register.get((uid,
-                                                 self.metagraph.axons[uid].wallet.hotkey), 0) > MAX_BAD_RESPONSES_TOLERANCE:
-                    rewards[idx] = -0.8  
-
+                    current_count = self.bad_miners_register.get((uid, self.metagraph.axons[uid].wallet.hotkey), 0)
+                    self.bad_miners_register[(uid, self.metagraph.axons[uid].wallet.hotkey)] = current_count + 1
+                    bt.logging.warning(f"DEBUG: Miner {uid} flagged as bad (reward {rewards[idx]} < {BAD_MINER_THRESHOLD}). Count: {current_count + 1}")
+                
+                bad_count = self.bad_miners_register.get((uid, self.metagraph.axons[uid].wallet.hotkey), 0)
+                if bad_count > MAX_BAD_RESPONSES_TOLERANCE:
+                    rewards[idx] = -0.8
+                    penalties_applied += 1
+                    bt.logging.warning(f"DEBUG: Applied -0.8 penalty to miner {uid} (bad_count={bad_count})")
+                
+                if old_reward != rewards[idx]:
+                    bt.logging.warning(f"DEBUG: Miner {uid} reward changed: {old_reward} -> {rewards[idx]}")
+            
+            bt.logging.warning(f"DEBUG: After penalties ({penalties_applied} applied): {rewards}")
+            
             self.synthetics_generator.update_dialog(synthetic_dialog['dialog_id'], reference_response)
             
             bt.logging.debug(f"Final scores before Bittensor normalization: {rewards}")
             bt.logging.debug(f"Rewards max: {rewards.max()}")
             bt.logging.debug(f"Rewards min: {rewards.min()}")
             
-             # Step 4: Final normalization for Bittensor (handles negative values)
-            if rewards.max() > 0:
-                # Simple normalization: just divide by max to keep relative proportions
-                rewards = rewards / (rewards.max() + 1e-5)
-
-            else:
-                bt.logging.warning("All scores are negative or zero, using uniform weights")
-                rewards = torch.ones_like(rewards) / len(rewards)
+            # Final normalization for Bittensor (handles negative values)
+            pre_norm_rewards = rewards.clone()
+            bt.logging.warning(f"DEBUG: Before final normalization: min={rewards.min()}, max={rewards.max()}")
             
-            bt.logging.debug(f"Final normalized rewards: {rewards}")
-            bt.logging.debug(f"Final rewards max: {rewards.max()}")
-            bt.logging.debug(f"Final rewards min: {rewards.min()}")
-
-            bt.logging.info(f"Scored responses: {rewards} for {miner_uids}")
+            if rewards.max() > 0:
+                rewards = rewards / (rewards.max() + 1e-5)
+                bt.logging.warning(f"DEBUG: Applied normalization (divided by {pre_norm_rewards.max()})")
+            else:
+                bt.logging.error(f"DEBUG: WARNING! All rewards <= 0, no normalization applied")
+                bt.logging.error(f"DEBUG: This might cause problems in update_scores!")
+            
+            bt.logging.warning(f"DEBUG: Final rewards: {rewards}")
+            bt.logging.warning(f"DEBUG: Final min={rewards.min()}, max={rewards.max()}")
+            
+            # Log the mapping
+            for i, uid in enumerate(miner_uids):
+                miner_type = "WORKING" if i in working_miner_indices else "NON-WORKING"
+                bt.logging.warning(f"DEBUG: UID {uid} ({miner_type}) -> reward {rewards[i]}")
+            
+            # Check UID mapping before update
+            bt.logging.warning(f"DEBUG: UID MAPPING CHECK:")
+            bt.logging.warning(f"DEBUG: miner_uids: {miner_uids}")
+            bt.logging.warning(f"DEBUG: metagraph total size: {len(self.metagraph.axons)}")
+            bt.logging.warning(f"DEBUG: self.scores size: {len(self.scores)}")
+            
+            for uid in miner_uids:
+                if uid >= len(self.scores):
+                    bt.logging.error(f"DEBUG: CRITICAL: UID {uid} >= scores length {len(self.scores)}")
+                
+                if uid < len(self.scores):
+                    current_score = self.scores[uid]
+                    bt.logging.warning(f"DEBUG: UID {uid}: current_score = {current_score:.6f}")
+            
+            bt.logging.warning(f"DEBUG: Calling update_scores with rewards: {rewards}")
+            bt.logging.warning(f"DEBUG: Calling update_scores with UIDs: {miner_uids}")
+            
             self.update_scores(rewards, miner_uids)
+            
+            # Check scores after update
+            bt.logging.warning(f"DEBUG: After update_scores, current self.scores:")
+            for uid in miner_uids:
+                if uid < len(self.scores):
+                    bt.logging.warning(f"DEBUG: UID {uid}: score = {self.scores[uid]:.6f}")
             
             if self.supabase_mode:
                 try:
@@ -178,7 +232,6 @@ class Validator(BaseValidatorNeuron):
             bt.logging.debug(f"Non-zero scores count: {(self.scores > 0).sum()}")
             bt.logging.debug(f"Scores sum: {self.scores.sum()}")
             time.sleep(600)
-
         except Exception as e:
             bt.logging.error(f"Error during forward: {e}")
             bt.logging.debug(print_exception(type(e), e, e.__traceback__))
