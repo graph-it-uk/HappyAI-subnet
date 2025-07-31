@@ -66,6 +66,8 @@ class Evaluator:
         reference_result = self._get_reference_result(query)
 
         scores = torch.zeros(len(responses))
+        raw_scores = []  # Store raw scores for logging
+        
         for i, response in enumerate(responses):
             print("EVALUATING:", response)
             if not response:
@@ -79,35 +81,61 @@ class Evaluator:
                 #score_speed = self._get_score_speed(response, reference_result)
 
                 score = self._combine_scores(score_reference, score_judge, score_speed)
-                if self.supabase_mode:
-                  bt.logging.warning("SUPABASE_TRIGGERED")
-                  input_json = {
-                    "user_id": self.user_id,
-                    "query": query.user_input,
-                    "response": response,
-                    "reference_result": reference_result,
-                    "score_semantic": float(score_reference),
-                    "score_judge": float(score_judge),
-                    "combo_score": float(score)
-                  }
-                  bt.logging.warning(f"input_json: {input_json}")
-                  
-                  supabase_result = self.supabase.table('evaluations').insert({
-                      "user_id": self.user_id,
-                      "query": query.user_input,
-                      "response": response,
-                      "reference_result": reference_result,
-                      "score_semantic": float(score_reference),
-                      "score_judge": float(score_judge),
-                      "combo_score": float(score)
-                  }).execute()
-                  bt.logging.warning(f"supabase_result: {supabase_result}")
                 scores[i] = score
+                raw_scores.append({
+                    'index': i,
+                    'response': response,
+                    'score_reference': score_reference,
+                    'score_judge': score_judge,
+                    'combo_score': score
+                })
             except Exception as e:
                 print('FAILED EVALUATING:', e)
                 scores[i] = 0
 
-        return scores, reference_result
+        # Normalize scores to 0-1 range
+        normalized_scores = torch.zeros_like(scores)
+        if scores.numel() > 0 and scores.max() > 1e-5:
+            scores_min = scores.min()
+            scores_max = scores.max()
+            
+            if scores_max > scores_min:
+                normalized_scores = (scores - scores_min) / (scores_max - scores_min)
+            else:
+                # If all scores are the same, set to 0.5
+                normalized_scores = torch.ones_like(scores) * 0.5
+                
+            bt.logging.info(f"Normalized scores in evaluator. Min: {scores_min}, Max: {scores_max}")
+        
+        # Now log the actual normalized scores to Supabase
+        for raw_score_data in raw_scores:
+            if self.supabase_mode:
+                bt.logging.warning("SUPABASE_TRIGGERED")
+                input_json = {
+                    "user_id": self.user_id,
+                    "query": query.user_input,
+                    "response": raw_score_data['response'],
+                    "reference_result": reference_result,
+                    "score_semantic": float(raw_score_data['score_reference']),
+                    "score_judge": float(raw_score_data['score_judge']),
+                    "combo_score": float(raw_score_data['combo_score']),
+                    "norm_score": float(normalized_scores[raw_score_data['index']])  # Actual normalized score
+                }
+                bt.logging.warning(f"input_json: {input_json}")
+                
+                supabase_result = self.supabase.table('evaluations').insert({
+                    "user_id": self.user_id,
+                    "query": query.user_input,
+                    "response": raw_score_data['response'],
+                    "reference_result": reference_result,
+                    "score_semantic": float(raw_score_data['score_reference']),
+                    "score_judge": float(raw_score_data['score_judge']),
+                    "combo_score": float(raw_score_data['combo_score']),
+                    "norm_score": float(normalized_scores[raw_score_data['index']])  # Actual normalized score
+                }).execute()
+                bt.logging.warning(f"supabase_result: {supabase_result}")
+
+        return normalized_scores, reference_result
 
     def _get_reference_result(self, query):
         try:

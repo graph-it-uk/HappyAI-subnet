@@ -7,6 +7,7 @@ import bittensor as bt
 import openai
 from dotenv import load_dotenv
 import asyncio
+import torch
 
 from app.chain.base.validator import BaseValidatorNeuron
 from app.chain.evaluation.evaluator import Evaluator
@@ -81,34 +82,70 @@ class Validator(BaseValidatorNeuron):
             # Log the results for monitoring purposes.
             bt.logging.trace(f"Received responses: {responses}")
 
-            rewards, reference_response = self.evaluator.evaluate(query, responses)
+            # Pre-filter non-working miners to save evaluation costs
+            working_miner_indices = []
+            non_working_miner_indices = []
+            
             for idx, uid in enumerate(miner_uids):
-                print(f"AXON FOR WALLET: {self.metagraph.axons[uid]}")
-
-                print(f"AXON FOR WALLET DICT: {dict(self.metagraph.axons[uid])}")
+                axon_ip = self.metagraph.axons[uid].ip
+                if axon_ip == "0.0.0.0" or axon_ip == "127.0.0.1" or axon_ip == "localhost":
+                    non_working_miner_indices.append(idx)
+                    bt.logging.info(f"Skipping evaluation for non-working miner UID {uid} (IP: {axon_ip})")
+                else:
+                    working_miner_indices.append(idx)
+            
+            # Only evaluate working miners
+            working_responses = [responses[i] for i in working_miner_indices] if working_miner_indices else []
+            
+            if working_responses:
+                working_rewards, reference_response = self.evaluator.evaluate(query, working_responses)
+            else:
+                working_rewards = torch.tensor([])
+                reference_response = None
+            
+            # Create final scores array with -1 for non-working miners
+            rewards = torch.zeros(len(miner_uids))
+            
+            # Add normalized working miner scores (already normalized in evaluator)
+            if working_rewards.numel() > 0:
+                for i, working_idx in enumerate(working_miner_indices):
+                    rewards[working_idx] = working_rewards[i]
+            
+            # Add -1 for non-working miners
+            for idx in non_working_miner_indices:
+                rewards[idx] = -1.0
+                bt.logging.info(f"Set non-working miner to -1.0 score")
+            
+            bt.logging.debug(f"Final scores: {rewards}")
+            
+            # Apply bad miner penalties (if any)
+            for idx, uid in enumerate(miner_uids):
                 if rewards[idx] < BAD_MINER_THRESHOLD:
                     self.bad_miners_register[(uid,
                                               self.metagraph.axons[uid].wallet.hotkey)] = self.bad_miners_register.get(uid, 0) + 1
 
                 if self.bad_miners_register.get((uid,
                                                  self.metagraph.axons[uid].wallet.hotkey), 0) > MAX_BAD_RESPONSES_TOLERANCE:
-                    rewards[idx] = 0
+                    rewards[idx] = -0.8  
 
             self.synthetics_generator.update_dialog(synthetic_dialog['dialog_id'], reference_response)
             
-            bt.logging.debug(f"Raw rewards before normalization: {rewards}")
+            bt.logging.debug(f"Final scores before Bittensor normalization: {rewards}")
             bt.logging.debug(f"Rewards max: {rewards.max()}")
             bt.logging.debug(f"Rewards min: {rewards.min()}")
             
-            # Don't normalize if all rewards are zero or very small
-            if rewards.max() > 1e-5:
+             # Step 4: Final normalization for Bittensor (handles negative values)
+            if rewards.max() > 0:
+                # Simple normalization: just divide by max to keep relative proportions
                 rewards = rewards / (rewards.max() + 1e-5)
+
             else:
-                bt.logging.warning("All rewards are very small or zero, skipping normalization")
+                bt.logging.warning("All scores are negative or zero, using uniform weights")
+                rewards = torch.ones_like(rewards) / len(rewards)
             
-            bt.logging.debug(f"Normalized rewards: {rewards}")
-            bt.logging.debug(f"Normalized rewards max: {rewards.max()}")
-            bt.logging.debug(f"Normalized rewards min: {rewards.min()}")
+            bt.logging.debug(f"Final normalized rewards: {rewards}")
+            bt.logging.debug(f"Final rewards max: {rewards.max()}")
+            bt.logging.debug(f"Final rewards min: {rewards.min()}")
 
             bt.logging.info(f"Scored responses: {rewards} for {miner_uids}")
             self.update_scores(rewards, miner_uids)
