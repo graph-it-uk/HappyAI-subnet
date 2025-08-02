@@ -134,16 +134,21 @@ class Validator(BaseValidatorNeuron):
             bt.logging.warning(f"DEBUG: Raw rewards after assignment: {rewards}")
             
             # Apply bad miner penalties (if any)
+            # Replace this entire section in your validator forward() method:
+
+            # Apply bad miner penalties (if any)
             penalties_applied = 0
             for idx, uid in enumerate(miner_uids):
                 old_reward = rewards[idx].clone()
                 
                 if rewards[idx] < BAD_MINER_THRESHOLD:
-                    current_count = self.bad_miners_register.get((uid, self.metagraph.axons[uid].wallet.hotkey), 0)
-                    self.bad_miners_register[(uid, self.metagraph.axons[uid].wallet.hotkey)] = current_count + 1
+                    hotkey = self.metagraph.axons[uid].hotkey  
+                    current_count = self.bad_miners_register.get((uid, hotkey), 0)
+                    self.bad_miners_register[(uid, hotkey)] = current_count + 1
                     bt.logging.warning(f"DEBUG: Miner {uid} flagged as bad (reward {rewards[idx]} < {BAD_MINER_THRESHOLD}). Count: {current_count + 1}")
                 
-                bad_count = self.bad_miners_register.get((uid, self.metagraph.axons[uid].wallet.hotkey), 0)
+                hotkey = self.metagraph.axons[uid].hotkey 
+                bad_count = self.bad_miners_register.get((uid, hotkey), 0)
                 if bad_count > MAX_BAD_RESPONSES_TOLERANCE:
                     rewards[idx] = -0.8
                     penalties_applied += 1
