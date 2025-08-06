@@ -30,6 +30,49 @@ def check_uid_availability(
     return True
 
 
+def round_robin_sample(validator, candidate_uids: List[int], k: int) -> List[int]:
+    """
+    Round-robin sampling to ensure fair evaluation of all miners.
+    Each miner gets evaluated exactly once per complete cycle.
+    
+    Args:
+        validator: Validator instance containing global_miner_index
+        candidate_uids (List[int]): List of available miner UIDs
+        k (int): Number of miners to select
+        
+    Returns:
+        List[int]: Selected miner UIDs in round-robin order
+    """
+    if not candidate_uids:
+        return []
+    
+    if len(candidate_uids) <= k:
+        # If we have fewer candidates than requested, return all
+        return candidate_uids
+    
+    # Round-robin selection
+    selected = []
+    total_candidates = len(candidate_uids)
+    
+    # Get current position and wrap around if needed
+    start_index = validator.global_miner_index % total_candidates
+    
+    for i in range(k):
+        # Select miners in round-robin fashion
+        index = (start_index + i) % total_candidates
+        selected.append(candidate_uids[index])
+    
+    # Update global index for next round
+    validator.global_miner_index = (validator.global_miner_index + k) % total_candidates
+    
+    bt.logging.debug(f"Round-robin: selected {len(selected)} miners starting from index {start_index}")
+    
+    return selected
+
+
+
+
+
 def get_miners_uids(self, k: int, exclude: List[int] = None, specified_miners: List[int] = None) -> torch.LongTensor:
     """Returns k available random uids from the metagraph.
     Args:
@@ -61,7 +104,7 @@ def get_miners_uids(self, k: int, exclude: List[int] = None, specified_miners: L
                 candidate_uids.append(uid)
 
     k = min(k, len(candidate_uids))
-    uids = torch.tensor(random.sample(candidate_uids, k))
+    uids = torch.tensor(round_robin_sample(self, candidate_uids, k))
     return uids
 
 

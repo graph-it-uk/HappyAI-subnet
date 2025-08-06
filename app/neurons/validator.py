@@ -1,5 +1,6 @@
 import os
 import time
+import json
 from datetime import datetime
 from traceback import print_exception
 
@@ -20,6 +21,8 @@ from supabase import create_client
 
 BAD_MINER_THRESHOLD = -5
 MAX_BAD_RESPONSES_TOLERANCE = 2
+
+
 
 
 class Validator(BaseValidatorNeuron):
@@ -46,6 +49,58 @@ class Validator(BaseValidatorNeuron):
                 supabase_url=os.environ.get("SUPABASE_URL"),
                 supabase_key=os.environ.get("SUPABASE_KEY")
             )
+        
+        # Load banned miners
+        self.banned_coldkeys = set()
+        self.banned_uids_cache = []
+        self.load_banned_miners()
+        
+        self.global_miner_index = 0
+
+
+    def load_banned_miners(self):
+        """Load banned miners from banned_miners.json file"""
+        try:
+            with open('banned_miners.json', 'r') as f:
+                ban_config = json.load(f)
+                self.banned_coldkeys = set(ban_config.get('banned_coldkeys', []))
+                bt.logging.info(f"Loaded {len(self.banned_coldkeys)} banned coldkeys from banned_miners.json")
+                if self.banned_coldkeys:
+                    bt.logging.warning(f"Banned coldkeys: {list(self.banned_coldkeys)}")
+        except FileNotFoundError:
+            bt.logging.info("No banned_miners.json found, starting with empty ban list")
+            self.banned_coldkeys = set()
+        except Exception as e:
+            bt.logging.error(f"Error loading banned_miners.json: {e}")
+            self.banned_coldkeys = set()
+
+    def get_banned_miner_uids(self):
+        """Get UIDs of currently banned miners"""
+        banned_uids = []
+        
+        if not self.banned_coldkeys:
+            return banned_uids
+            
+        for uid in range(self.metagraph.n.item()):
+            try:
+                # Get neuron info to access coldkey
+                neuron_info = self.subtensor.neuron_for_uid(uid, self.config.netuid)
+                if neuron_info and neuron_info.coldkey in self.banned_coldkeys:
+                    banned_uids.append(uid)
+                    bt.logging.debug(f"Found banned miner: UID {uid} with coldkey {neuron_info.coldkey}")
+            except Exception as e:
+                bt.logging.trace(f"Could not get coldkey for UID {uid}: {e}")
+                continue
+                
+        if banned_uids:
+            bt.logging.warning(f"Excluded {len(banned_uids)} banned miners from validation: UIDs {banned_uids}")
+        
+        return banned_uids
+
+    def reload_banned_miners(self):
+        """Reload banned miners from file - useful for updating bans without restart"""
+        bt.logging.info("Reloading banned miners list...")
+        self.load_banned_miners()
 
     async def forward(self):
         """
@@ -57,8 +112,14 @@ class Validator(BaseValidatorNeuron):
         - Updating the scores
         """
         try:
-            miner_uids = get_miners_uids(self, k=self.config.neuron.sample_size)
+            # Get banned miner UIDs to exclude from selection
+            banned_uids = self.get_banned_miner_uids()
+            
+            # Select miners excluding banned ones
+            miner_uids = get_miners_uids(self, k=self.config.neuron.sample_size, exclude=banned_uids)
             bt.logging.warning(f"DEBUG: Selected miner UIDs: {miner_uids}")
+            if banned_uids:
+                bt.logging.warning(f"DEBUG: Excluded banned UIDs: {banned_uids}")
             
             synthetic_dialog = await self.synthetics_generator.generate()
             query = CompletionSynapse(request_id = int(datetime.now().timestamp()*1000),
