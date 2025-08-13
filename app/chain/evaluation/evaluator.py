@@ -180,50 +180,27 @@ class Evaluator:
 
 
 
-judge_prompt = '''
-You are given a correspondence between user and assistant performing the role of psychologist.
-Previous correspondence messages are provided in CONTEXT section.
-The latest assistant response is provided in ASSISTANT RESPONSE.
-Your task is to answer the question provided in QUESTION section in regard to the ASSISTANT RESPONSE message.
-The options for answering the question are provided in parenthesis after the question.
-
-Your output has to be a dictionary in a valid JSON format.
-The dictionary has to have the following one key:
-'answer': string with question answer according to the options
-
-# CONTEXT:
-{context}
-
-# ASSISTANT RESPONSE:
-{response}
-
-# QUESTION:
-{query}
-
-YOUR OUTPUT:
-'''
-
 judge_comparison_prompt = '''
-You are given a correspondence between user and assistant performing the role of psychologist.
-Previous correspondence messages are provided in CONTEXT section.
-You are provided with two options of latest assistant response labeled as OPTION 1 and OPTION 2.
-Your task is decide which option is better from the modern psychotherapy perspective.
-If both options are semantically identical, answer "SAME".
+  You are given a correspondence between user and assistant performing the role of psychologist.
+  Previous correspondence messages are provided in CONTEXT section.
+  You are provided with two options of latest assistant response labeled as OPTION 1 and OPTION 2.
+  Your task is decide which option is better from the modern psychotherapy perspective.
+  If both options are semantically identical, answer "SAME".
 
-Your output has to be a dictionary in a valid JSON format.
-The dictionary has to have the following one key:
-'answer': string with values "OPTION 1", "OPTION 2" or "SAME"
+  Your output has to be a dictionary in a valid JSON format.
+  The dictionary has to have the following one key:
+  'answer': string with values "OPTION 1", "OPTION 2" or "SAME"
 
-# CONTEXT:
-{context}
+  # CONTEXT:
+  {context}
 
-# OPTION 1:
-{option_1}
+  # OPTION 1:
+  {option_1}
 
-# OPTION 2:
-{option_2}
+  # OPTION 2:
+  {option_2}
 
-YOUR OUTPUT:
+  YOUR OUTPUT:
 '''
 
 judge_queries = [
