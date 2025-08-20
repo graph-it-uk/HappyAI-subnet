@@ -18,7 +18,7 @@ class LlmResponseService:
 
     def process_data(self, llm, user_input, temperature=0.2, model='', system_prompt=None):
         if llm == 'gpt':
-            model = 'gpt-4o' if model == '' else model
+            model = 'gpt-5-nano' if model == '' else model
             return self.__try_process(self.process_data_gpt, self.process_data_claude, user_input, model, system_prompt, temperature)
         elif llm == 'claude':
             model = 'claude-3-5-sonnet-20240620' if model == '' else model
@@ -26,7 +26,7 @@ class LlmResponseService:
         else:
             raise ValueError("Invalid LLM specified. Choose 'gpt' or 'claude'.")
 
-    def process_data_gpt_json(self, user_input, model: str = "gpt-4o", system_prompt=None) -> dict:
+    def process_data_gpt_json(self, user_input, model: str = "gpt-5-nano", system_prompt=None) -> dict:
         chat_completion = self.__open_ai_client.chat.completions.create(
             messages=[{"role": "system", "content": system_prompt},
                       {
@@ -35,7 +35,6 @@ class LlmResponseService:
                       }],
             model=model,
             response_format={"type": "json_object"},
-            temperature=0.2,
             seed=123321
         )
 
@@ -43,14 +42,13 @@ class LlmResponseService:
         json_output_for_page = json.loads(res)
         return json_output_for_page
 
-    def process_data_gpt(self, user_input: str, model: str = 'gpt-4o', system_prompt=None,temperature=0.2) -> str:
+    def process_data_gpt(self, user_input: str, model: str = 'gpt-5-nano', system_prompt=None, temperature=0.2) -> str:
         chat_completion = self.__open_ai_client.chat.completions.create(
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_input},
             ],
             model=model,
-            temperature=temperature,
             seed=123321,
         )
         res = chat_completion.choices[0].message.content
@@ -81,7 +79,7 @@ class LlmResponseService:
         if next_q_type == 2:
             past_problem = self.process_data(
                 llm='gpt', user_input=last_n_messages_str, system_prompt=sys_prompt_past_problem_classifier,
-                model='gpt-4o'
+                model='gpt-5-nano'
             )
 
         else:
@@ -102,7 +100,7 @@ class LlmResponseService:
 
         summary = self.process_data('gpt',
                                     conversation_str,
-                                    model='gpt-4o',
+                                    model='gpt-5-nano',
                                     system_prompt=sys_prompt_chat_summary)
 
         return summary
