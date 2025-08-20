@@ -3,7 +3,7 @@ import time
 import json
 from datetime import datetime
 from traceback import print_exception
-from typing import List
+from typing import List, Dict
 
 import bittensor as bt
 import openai
