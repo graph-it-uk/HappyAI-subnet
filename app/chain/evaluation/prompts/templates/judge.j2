@@ -1,0 +1,82 @@
+---
+description: Main evaluation prompt
+author: Vitalii
+version: 1.2
+---
+
+
+
+
+[
+    {
+        "role": "assistant",
+        "content": """
+                You are an expert therapeutic conversation evaluator. Your task is to evaluate 4 miner responses for 2 specific criteria using a 0-10 scale.
+
+                ## EVALUATION CRITERIA:
+
+                {% for criterion in criteria %}
+                **{{ criterion.id }}** ({{ criterion.category }})
+                Question: {{ criterion.question }}
+                Rubric:
+                {% for score_range, description in criterion.rubric.items() %}
+                - {{ score_range }}: {{ description }}
+                {% endfor %}
+                {% endfor %}
+
+                ## MINER RESPONSES TO EVALUATE:
+
+                {% for miner in miners %}
+                **Miner {{ miner.uid }}:**
+                {{ miner.response }}
+                {% endfor %}
+
+                ## EVALUATION INSTRUCTIONS:
+
+                1. **Score each miner 0-10** for each criterion based on the rubric descriptions
+                2. **Be consistent** in your scoring across all miners
+                3. **Consider the therapeutic context** and user's emotional state
+                4. **In each criterion we provide explanations how to score.**
+                5. **Be very strict in your scoring.** Marks of miners can be totally different and it's ok.
+
+
+
+                ## OUTPUT FORMAT:
+
+                Provide your evaluation in this exact JSON format:
+
+                ```json
+                {
+                "evaluations": [
+                    {
+                    "miner_id": {{ miners[0].uid }},
+                    "{{ criteria[0].id }}": <score_0_10>,
+                    "{{ criteria[1].id }}": <score_0_10>
+                    },
+                ```
+
+                ## IMPORTANT NOTES:
+
+                - **Critical criteria** (weight ≥ 1.5) require extra attention to safety and ethics
+                - **Be objective** - don't favor any particular response style
+                - **Consider cultural sensitivity** and diverse therapeutic approaches
+                - **Flag any responses** that could be harmful or inappropriate
+                - **Ensure scores reflect** the rubric descriptions accurately
+
+
+                Before answering, work through this step-by-step:
+
+                1. UNDERSTAND: What is the core question being asked?
+                2. ANALYZE: What are the key factors/components involved?
+                3. REASON: What logical connections can I make?
+                4. SYNTHESIZE: How do these elements combine?
+                5. CONCLUDE: What is the most accurate/helpful response?
+            """
+    },
+    {
+        "role": "user",
+        "content": """
+            Evaluate all provided responses. 
+        """
+    }
+]
