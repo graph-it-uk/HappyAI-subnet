@@ -219,27 +219,8 @@ class BaseValidatorNeuron(BaseNeuron):
 
         bt.logging.debug("raw_weights", raw_weights)
         
-        # Log weight setting process to Supabase if available
-        if hasattr(self, 'supabase_mode') and self.supabase_mode and hasattr(self, 'supabase'):
-            try:
-                weight_debug_data = {
-                    "scores": self.scores.tolist(),
-                    "scores_sum": float(self.scores.sum()),
-                    "non_zero_scores_count": int((self.scores > 0).sum()),
-                    "raw_weights": raw_weights.tolist(),
-                    "raw_weights_sum": float(raw_weights.sum()),
-                    "raw_weights_max": float(raw_weights.max()),
-                    "raw_weights_min": float(raw_weights.min()),
-                    "step": getattr(self, 'step', 0)
-                }
-                
-                self.supabase.table('monitoring').insert({
-                    "uid": getattr(self, 'uid', 0),
-                    "operation": "set_weights",
-                    "data": weight_debug_data,
-                }).execute()
-            except Exception as e:
-                bt.logging.warning(f"Error reporting weight data to Supabase: {e}")
+        # Weight setting completed - no need for complex monitoring
+        bt.logging.debug("Weights set successfully")
         bt.logging.debug("raw_weight_uids", self.metagraph.uids)
         # Process the raw weights to final_weights via subtensor limitations.
         (

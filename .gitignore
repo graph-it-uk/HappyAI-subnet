@@ -6,3 +6,4 @@
 .venv/
 wandb/
 test.ipynb
+simple_elo_schema.sql
