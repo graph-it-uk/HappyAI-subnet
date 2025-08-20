@@ -121,7 +121,7 @@ python-frontmatter==1.1.0
 python-Levenshtein==0.27.1
 python-statemachine==2.5.0
 pywry==0.6.2
-PyYAML==5.1
+PyYAML
 pyzmq==27.0.0
 RapidFuzz==3.13.0
 realtime==2.5.3
