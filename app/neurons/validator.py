@@ -43,6 +43,22 @@ class Validator(BaseValidatorNeuron):
         self.synthetics_generator = SyntheticsGenerator(llm_client)
         self.worker = Worker(worker_url=os.environ["WORKER_URL"], worker_port=os.environ["WORKER_PORT"])
         
+        # Initialize Supabase configuration FIRST
+        self.supabase_mode = os.environ.get("SUPABASE_MODE", "False").lower() == "true"
+        self.supabase = None
+        if self.supabase_mode:
+            try:
+                supabase_url = os.environ.get("SUPABASE_URL")
+                supabase_key = os.environ.get("SUPABASE_KEY")
+                if supabase_url and supabase_key:
+                    self.supabase = create_client(supabase_url, supabase_key)
+                    bt.logging.info("✅ Supabase client initialized successfully")
+                else:
+                    bt.logging.warning("⚠️ Supabase credentials not found, Supabase disabled")
+            except Exception as e:
+                bt.logging.error(f"❌ Failed to initialize Supabase client: {e}")
+                self.supabase = None
+        
         # Initialize ELO sync manager if Supabase is enabled
         self.elo_sync_manager = None
         if self.supabase_mode and self.supabase:
@@ -70,13 +86,6 @@ class Validator(BaseValidatorNeuron):
         self.tournament_group_size = 6  # Default group size for tournaments
         
         self.bad_miners_register = {}
-        self.supabase_mode = os.environ.get("SUPABASE_MODE", "False").lower() == "true"
-        self.supabase = None
-        if self.supabase_mode:
-            self.supabase = create_client(
-                supabase_url=os.environ.get("SUPABASE_URL"),
-                supabase_key=os.environ.get("SUPABASE_KEY")
-            )
         
         # Load banned miners
         self.banned_coldkeys = set()
