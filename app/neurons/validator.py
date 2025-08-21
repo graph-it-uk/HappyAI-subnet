@@ -17,7 +17,7 @@ from app.chain.evaluation.simple_elo_sync import SimpleELOSync
 from app.chain.protocol import CompletionSynapse
 from app.chain.synthetics.generator import SyntheticsGenerator
 
-from app.chain.utils.uids import get_miners_uids
+from app.chain.utils.uids import get_miners_uids, tournament_group_miners
 from app.chain.worker import Worker
 from supabase import create_client
 
@@ -67,7 +67,9 @@ class Validator(BaseValidatorNeuron):
                 supabase_key = os.environ.get("SUPABASE_KEY")
                 if supabase_url and supabase_key:
                     self.elo_sync_manager = SimpleELOSync(supabase_url, supabase_key)
-                    bt.logging.info("✅ Simple ELO sync initialized successfully")
+                    # Set the validator instance so ELO sync can access metagraph and set weights
+                    self.elo_sync_manager.set_validator_instance(self)
+                    bt.logging.info("✅ Simple ELO sync initialized successfully with validator instance")
                 else:
                     bt.logging.warning("⚠️ Supabase credentials not found, ELO sync disabled")
             except Exception as e:
@@ -189,7 +191,7 @@ class Validator(BaseValidatorNeuron):
         self.current_epoch = self.current_epoch
         self.evaluation_round = 0
         
-        return self.tournament_group_miners(group_size, exclude, specified_miners)
+        return tournament_group_miners(self, exclude, specified_miners, group_size)
 
     async def forward(self):
         """
@@ -212,9 +214,7 @@ class Validator(BaseValidatorNeuron):
                 bt.logging.warning("No tournament groups created, skipping evaluation")
                 return
             
-            # Submit ELO ratings for this evaluation round
-            if self.elo_sync_manager:
-                self.submit_elo_ratings(self.current_epoch, miner_uids, rewards)
+            # ELO ratings will be submitted after all groups are evaluated
             
             # Generate synthetic query for all groups
             synthetic_dialog = await self.synthetics_generator.generate()
@@ -223,8 +223,11 @@ class Validator(BaseValidatorNeuron):
                                     user_input = synthetic_dialog['messages'][-1].content)
             bt.logging.info('Generated synthetic query for tournament evaluation')
             
-            # Process each tournament group
+            # Process each tournament group and collect ELO ratings
             total_miners_evaluated = 0
+            all_miner_uids = []  # Collect all miner UIDs evaluated
+            all_rewards = []     # Collect all rewards
+            
             for group_idx, miner_uids in enumerate(all_groups):
                 bt.logging.info(f"Evaluating tournament group {group_idx + 1}/{len(all_groups)}: {miner_uids}")
                 
@@ -262,11 +265,20 @@ class Validator(BaseValidatorNeuron):
                         bt.logging.info(f"Group {group_idx + 1} tournament results: {working_rewards}")
                         total_miners_evaluated += len(working_responses)
                         
+                        # Collect ELO ratings for this group
+                        all_miner_uids.extend(working_uids)
+                        all_rewards.extend(working_rewards.tolist() if hasattr(working_rewards, 'tolist') else working_rewards)
+                        
                     except Exception as e:
                         bt.logging.error(f"Failed to evaluate group {group_idx + 1}: {e}")
                         continue
                 else:
                     bt.logging.warning(f"Group {group_idx + 1}: Insufficient working miners for tournament evaluation")
+            
+            # Submit ELO ratings for all evaluated miners
+            if self.elo_sync_manager and all_miner_uids and all_rewards:
+                bt.logging.info(f"Submitting ELO ratings for {len(all_miner_uids)} miners")
+                self.submit_elo_ratings(self.current_epoch, all_miner_uids, all_rewards)
             
             # Update epoch counter after all groups processed
             self.current_epoch += 1

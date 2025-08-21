@@ -18,27 +18,67 @@ class SimpleELOSync:
     """
     
     def __init__(self, supabase_url: str, supabase_key: str):
-        self.supabase: Client = create_client(supabase_url, supabase_key)
-        self.validator_instance = None
-        
-        # Test connection
+        # Test connection BEFORE creating the object
+        test_client = create_client(supabase_url, supabase_key)
         try:
-            self.supabase.table('elo_submissions').select('id').limit(1).execute()
-            bt.logging.info("✅ Simple ELO sync connected to Supabase")
+            # Create a test record to verify full database functionality
+            test_data = {
+                'epoch': -1,  # Use negative epoch to avoid conflicts
+                'miner_uid': -1,
+                'elo_rating': 1000,
+                'validator_uid': -1,
+                'timestamp': time.time()
+            }
+            
+            # Insert test data
+            insert_result = test_client.table('elo_submissions').insert(test_data).execute()
+            bt.logging.info("✅ Test data inserted successfully")
+            
+            # Verify we can read it back
+            read_result = test_client.table('elo_submissions').select('*').eq('epoch', -1).execute()
+            if read_result.data:
+                bt.logging.info("✅ Test data read successfully")
+            else:
+                raise Exception("Could not read test data back")
+            
+            # Clean up test data
+            delete_result = test_client.table('elo_submissions').delete().eq('epoch', -1).execute()
+            bt.logging.info("✅ Test data cleaned up successfully")
+            
+            bt.logging.info("✅ Simple ELO sync connected to Supabase with full CRUD functionality")
+            
         except Exception as e:
             bt.logging.error(f"❌ Failed to connect to Supabase: {e}")
             raise
+        
+        # Only create the object if connection test passes
+        self.supabase: Client = test_client
+        self.validator_instance = None
     
     def set_validator_instance(self, validator):
         """Set validator instance for metagraph access"""
         self.validator_instance = validator
     
-    def submit_elo_rating(self, epoch: int, miner_uid: int, rating: int, validator_uid: int) -> bool:
+    def set_validator_uid(self, validator_uid: int):
+        """Set validator UID for ELO sync operations"""
+        self.validator_uid = validator_uid
+        bt.logging.info(f"✅ Validator UID set to {validator_uid} in ELO sync manager")
+    
+    def submit_elo_rating(self, epoch: int, miner_uid: int, rating: int, validator_uid: int = None) -> bool:
         """
         Submit ELO rating - no waiting, no thresholds.
         Just store the result.
         """
         try:
+            # Use stored validator UID if none provided
+            if validator_uid is None and hasattr(self, 'validator_uid'):
+                validator_uid = self.validator_uid
+                bt.logging.debug(f"Using stored validator UID: {validator_uid}")
+            
+            if validator_uid is None:
+                bt.logging.error("❌ No validator UID available for ELO rating submission")
+                return False
+            
             result = self.supabase.table('elo_submissions').upsert({
                 'epoch': epoch,
                 'miner_uid': miner_uid,
@@ -47,7 +87,7 @@ class SimpleELOSync:
                 'timestamp': time.time()
             }).execute()
             
-            bt.logging.debug(f"✅ ELO rating submitted: Epoch {epoch}, Miner {miner_uid}, Rating {rating}")
+            bt.logging.debug(f"✅ ELO rating submitted: Epoch {epoch}, Miner {miner_uid}, Rating {rating}, Validator {validator_uid}")
             return True
             
         except Exception as e:
