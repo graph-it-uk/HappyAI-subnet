@@ -442,17 +442,27 @@ class Validator(BaseValidatorNeuron):
                         for round_num in range(self.num_evaluation_rounds):
                             bt.logging.info(f"Group {group_idx + 1}: Running evaluation round {round_num + 1}/{self.num_evaluation_rounds}")
                             
-                            # Evaluate using tournament system (this runs multiple criteria internally)
-                            working_rewards, _ = self.evaluator.evaluate(query, working_responses, working_uids)
-                            
-                            bt.logging.info(f"Group {group_idx + 1}, Round {round_num + 1}: Results {working_rewards}")
-                            
-                            # Store scores from this round
-                            for uid, reward in zip(working_uids, working_rewards):
-                                if uid not in group_scores:
-                                    group_scores[uid] = []
-                                group_scores[uid].append(reward)
-                                bt.logging.debug(f"Miner {uid}: Round {round_num + 1} score: {reward:.4f}")
+                            try:
+                                # Evaluate using tournament system (this runs multiple criteria internally)
+                                working_rewards, _ = self.evaluator.evaluate(query, working_responses, working_uids)
+                                
+                                # Ensure working_rewards is a valid tensor/list
+                                if working_rewards is None or len(working_rewards) != len(working_uids):
+                                    bt.logging.error(f"Group {group_idx + 1}, Round {round_num + 1}: Invalid evaluation results")
+                                    continue
+                                
+                                bt.logging.info(f"Group {group_idx + 1}, Round {round_num + 1}: Results {working_rewards}")
+                                
+                                # Store scores from this round
+                                for uid, reward in zip(working_uids, working_rewards):
+                                    if uid not in group_scores:
+                                        group_scores[uid] = []
+                                    group_scores[uid].append(reward)
+                                    bt.logging.debug(f"Miner {uid}: Round {round_num + 1} score: {reward:.4f}")
+                                    
+                            except Exception as e:
+                                bt.logging.error(f"Group {group_idx + 1}, Round {round_num + 1} failed: {e}")
+                                continue
                         
                         # Calculate average score for each miner in this group
                         for uid, round_scores in group_scores.items():
@@ -567,15 +577,30 @@ class Validator(BaseValidatorNeuron):
             return
         
         try:
+            bt.logging.info(f"Setting weights from consensus for {len(consensus_ratings)} miners")
+            
             # Create weight tensor based on consensus ELO ratings
             weights = torch.zeros(self.metagraph.n.item())
             
             # Set weights based on consensus ratings
             for uid, consensus_data in consensus_ratings.items():
-                if uid < len(weights):
-                    # Use the consensus weight directly (already normalized 0-1)
-                    weights[uid] = consensus_data['final_weight']
-                    bt.logging.debug(f"Miner {uid}: Consensus ELO {consensus_data['final_elo']}, Weight {consensus_data['final_weight']:.4f}")
+                # Ensure uid is an integer for proper comparison and indexing
+                try:
+                    uid_int = int(uid)
+                    if uid_int < len(weights):
+                        # Use the consensus weight directly (already normalized 0-1)
+                        weights[uid_int] = consensus_data['final_weight']
+                        bt.logging.debug(f"Miner {uid_int}: Consensus ELO {consensus_data['final_elo']}, Weight {consensus_data['final_weight']:.4f}")
+                    else:
+                        bt.logging.warning(f"Miner UID {uid_int} out of bounds (max: {len(weights)-1})")
+                except (ValueError, TypeError) as e:
+                    bt.logging.error(f"Invalid UID format '{uid}': {e}")
+                    continue
+            
+            # Check if we have any valid weights
+            if weights.sum() == 0:
+                bt.logging.warning("No valid weights found in consensus data")
+                return
             
             # Normalize weights to sum to 1.0
             if weights.sum() > 0:
@@ -589,6 +614,8 @@ class Validator(BaseValidatorNeuron):
             
         except Exception as e:
             bt.logging.error(f"Error setting weights from consensus: {e}")
+            bt.logging.debug(f"Consensus data type: {type(consensus_ratings)}")
+            bt.logging.debug(f"Consensus data keys: {list(consensus_ratings.keys())[:5] if consensus_ratings else 'None'}")
             # Fallback to local ELO
             self.set_weights_from_elo()
     
