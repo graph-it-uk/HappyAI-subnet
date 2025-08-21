@@ -191,6 +191,10 @@ class SimpleELOSync:
                 }).eq('epoch', epoch).execute()
                 
                 bt.logging.info(f"🚀 Epoch {epoch} weights pushed to Bittensor: {len(weights)} miners")
+                
+                # Push average scores to another database
+                self.push_average_scores_to_db(epoch, consensus_data)
+                
                 return True
             else:
                 bt.logging.warning(f"⚠️ No valid weights to push for epoch {epoch}")
@@ -199,6 +203,64 @@ class SimpleELOSync:
         except Exception as e:
             bt.logging.error(f"❌ Failed to push epoch {epoch} to Bittensor: {e}")
             return False
+    
+    def push_average_scores_to_db(self, epoch: int, consensus_data: Dict):
+        """
+        Push average ELO scores to another database after Bittensor push.
+        
+        Args:
+            epoch: Epoch number
+            consensus_data: Consensus data with final ELO scores
+        """
+        try:
+            # Create average scores data
+            average_scores = []
+            for miner_uid, data in consensus_data.items():
+                uid = int(miner_uid)
+                average_scores.append({
+                    'epoch': epoch,
+                    'miner_uid': uid,
+                    'final_elo': data['final_elo'],
+                    'final_weight': data['final_weight'],
+                    'validator_count': data['validator_count'],
+                    'timestamp': time.time()
+                })
+            
+            # Insert into average_scores table (create if doesn't exist)
+            if average_scores:
+                result = self.supabase.table('average_scores').upsert(average_scores).execute()
+                bt.logging.info(f"📊 Pushed {len(average_scores)} average scores to database for epoch {epoch}")
+            else:
+                bt.logging.warning(f"⚠️ No average scores to push for epoch {epoch}")
+                
+        except Exception as e:
+            bt.logging.error(f"❌ Failed to push average scores to database: {e}")
+    
+    def get_epoch_consensus(self, epoch: int) -> Optional[Dict]:
+        """
+        Get consensus ELO data for a specific epoch.
+        
+        Args:
+            epoch: Epoch number to retrieve consensus for
+            
+        Returns:
+            Consensus data dict or None if not available
+        """
+        try:
+            # Get consensus for this epoch
+            result = self.supabase.table('epoch_consensus').select('*').eq('epoch', epoch).eq('finalized', True).execute()
+            
+            if not result.data:
+                bt.logging.debug(f"No finalized consensus found for epoch {epoch}")
+                return None
+            
+            consensus_data = result.data[0]['consensus_data']
+            bt.logging.info(f"✅ Retrieved consensus for epoch {epoch}: {len(consensus_data)} miners")
+            return consensus_data
+            
+        except Exception as e:
+            bt.logging.error(f"❌ Failed to get consensus for epoch {epoch}: {e}")
+            return None
     
     def get_epoch_status(self, epoch: int) -> Dict:
         """Get simple status for an epoch"""

@@ -87,6 +87,19 @@ class Validator(BaseValidatorNeuron):
         self.spec_version = 1  # Version for weight setting
         self.tournament_group_size = 6  # Default group size for tournaments
         
+        # Configuration for evaluation rounds
+        self.num_evaluation_rounds = int(os.getenv('NUM_EVALUATION_ROUNDS', 3))  # Default: 3 rounds per group
+        bt.logging.info(f"Configuration: {self.num_evaluation_rounds} evaluation rounds per group")
+        
+        # Store previous ELO scores for miners
+        self.previous_elo_scores = {}
+        
+        # Track validation cycles for score refresh
+        self.validation_cycle_count = 0
+        self.refresh_scores_after_cycles = 10
+        
+
+        
         self.bad_miners_register = {}
         
         # Load banned miners
@@ -143,6 +156,79 @@ class Validator(BaseValidatorNeuron):
         bt.logging.info("Reloading banned miners list...")
         self.load_banned_miners()
     
+    def get_previous_elo_scores(self, miner_uids: List[int]) -> Dict[int, float]:
+        """
+        Get previous ELO scores for miners from the database.
+        
+        Args:
+            miner_uids: List of miner UIDs to get scores for
+            
+        Returns:
+            Dict mapping miner UID to previous ELO score
+        """
+        if not self.elo_sync_manager:
+            bt.logging.debug("No ELO sync manager available")
+            return {}
+            
+        try:
+            previous_scores = {}
+            
+            for uid in miner_uids:
+                # Try to get the most recent ELO score for this miner
+                result = self.supabase.table('elo_submissions').select('elo_rating').eq('miner_uid', uid).order('timestamp', desc=True).limit(1).execute()
+                
+                if result.data:
+                    # Convert ELO rating back to normalized score (0-1)
+                    elo_rating = result.data[0]['elo_rating']
+                    normalized_score = elo_rating / 1000.0  # Convert back from ELO scale
+                    previous_scores[uid] = normalized_score
+                    bt.logging.debug(f"Miner {uid}: Previous ELO score {elo_rating} -> normalized {normalized_score:.4f}")
+                else:
+                    # No previous score, use default
+                    previous_scores[uid] = 0.5  # Default middle score
+                    bt.logging.debug(f"Miner {uid}: No previous score, using default 0.5")
+            
+            bt.logging.info(f"Retrieved previous ELO scores for {len(previous_scores)} miners")
+            return previous_scores
+            
+        except Exception as e:
+            bt.logging.error(f"Error getting previous ELO scores: {e}")
+            return {}
+    
+    def store_current_elo_scores(self, miner_uids: List[int], scores: List[float]):
+        """
+        Store current ELO scores for the next validation cycle.
+        
+        Args:
+            miner_uids: List of miner UIDs
+            scores: List of corresponding scores
+        """
+        try:
+            for uid, score in zip(miner_uids, scores):
+                self.previous_elo_scores[uid] = score
+                bt.logging.debug(f"Stored current score for miner {uid}: {score:.4f}")
+            
+            bt.logging.info(f"Stored current ELO scores for {len(miner_uids)} miners")
+            
+        except Exception as e:
+            bt.logging.error(f"Error storing current ELO scores: {e}")
+    
+    def refresh_elo_scores(self):
+        """
+        Refresh ELO scores after 10 validation cycles.
+        This resets the previous scores to force fresh evaluation.
+        """
+        try:
+            bt.logging.info("🔄 Refreshing ELO scores after 10 validation cycles")
+            self.previous_elo_scores.clear()
+            self.validation_cycle_count = 0
+            bt.logging.info("✅ ELO scores refreshed, starting fresh evaluation")
+            
+        except Exception as e:
+            bt.logging.error(f"Error refreshing ELO scores: {e}")
+    
+
+    
     def submit_elo_ratings(self, epoch: int, miner_uids: List[int], rewards: List[float]):
         """
         Submit ELO ratings for evaluated miners.
@@ -187,8 +273,7 @@ class Validator(BaseValidatorNeuron):
         Returns:
             List[List[int]]: All tournament groups for this epoch
         """
-        # Set current epoch and evaluation round for proper grouping
-        self.current_epoch = self.current_epoch
+
         self.evaluation_round = 0
         
         return tournament_group_miners(self, exclude, specified_miners, group_size)
@@ -198,9 +283,11 @@ class Validator(BaseValidatorNeuron):
         Validator forward pass with tournament evaluation. Consists of:
         - Generating the query
         - Creating tournament groups
-        - Evaluating each group
-        - Updating ELO ratings
-        - Setting weights based on ELO rankings
+        - Evaluating each group with multiple criteria
+        - Collecting scores locally
+        - Calculating average ELO scores
+        - Submitting average ELO ratings to Supabase
+        - Setting weights based on consensus
         """
         try:
             # Get banned miner UIDs to exclude from selection
@@ -210,11 +297,24 @@ class Validator(BaseValidatorNeuron):
             all_groups = self.get_tournament_groups(group_size=self.tournament_group_size, exclude=banned_uids)
             bt.logging.info(f"Created {len(all_groups)} tournament groups for epoch {self.current_epoch}")
             
+            # Get all unique miner UIDs from all groups
+            all_miner_uids = list(set(uid for group in all_groups for uid in group))
+            
+            # Load previous ELO scores for all miners
+            previous_scores = self.get_previous_elo_scores(all_miner_uids)
+            bt.logging.info(f"Loaded previous ELO scores for {len(previous_scores)} miners")
+            
+            # Debug: Log first few groups to see the structure
+            if all_groups:
+                bt.logging.debug(f"First 3 groups: {all_groups[:3]}")
+                bt.logging.debug(f"Total miners in groups: {sum(len(group) for group in all_groups)}")
+                bt.logging.debug(f"Unique miners: {len(set(uid for group in all_groups for uid in group))}")
+            else:
+                bt.logging.warning("No tournament groups created - this will cause evaluation to fail")
+            
             if not all_groups:
                 bt.logging.warning("No tournament groups created, skipping evaluation")
                 return
-            
-            # ELO ratings will be submitted after all groups are evaluated
             
             # Generate synthetic query for all groups
             synthetic_dialog = await self.synthetics_generator.generate()
@@ -223,35 +323,112 @@ class Validator(BaseValidatorNeuron):
                                     user_input = synthetic_dialog['messages'][-1].content)
             bt.logging.info('Generated synthetic query for tournament evaluation')
             
-            # Process each tournament group and collect ELO ratings
+            # Local score collection - store scores for each miner across all groups
+            miner_scores = {}  # uid -> list of scores
             total_miners_evaluated = 0
-            all_miner_uids = []  # Collect all miner UIDs evaluated
-            all_rewards = []     # Collect all rewards
             
+            # Process each tournament group and collect scores locally
             for group_idx, miner_uids in enumerate(all_groups):
                 bt.logging.info(f"Evaluating tournament group {group_idx + 1}/{len(all_groups)}: {miner_uids}")
                 
-                # Query miners in this group
-                responses = await self.dendrite(
-                    axons=[self.metagraph.axons[uid] for uid in miner_uids],
-                    synapse=query,
-                    deserialize=True,
-                    timeout=20,
-                )
+                # Query miners in this group with increased timeout and retry logic
+                max_retries = 2
+                responses = None
                 
-                # Filter working responses
+                for attempt in range(max_retries + 1):
+                    try:
+                        bt.logging.debug(f"Querying group {group_idx + 1} miners (attempt {attempt + 1}/{max_retries + 1})")
+                        responses = await self.dendrite(
+                            axons=[self.metagraph.axons[uid] for uid in miner_uids],
+                            synapse=query,
+                            deserialize=True,
+                            timeout=45,  # Increased timeout from 20 to 45 seconds
+                        )
+                        bt.logging.debug(f"Group {group_idx + 1}: Successfully received responses on attempt {attempt + 1}")
+                        break
+                    except Exception as e:
+                        if attempt < max_retries:
+                            bt.logging.warning(f"Group {group_idx + 1}: Attempt {attempt + 1} failed with {type(e).__name__}: {e}. Retrying...")
+                            await asyncio.sleep(2 ** attempt)  # Exponential backoff: 1s, 2s, 4s
+                        else:
+                            bt.logging.error(f"Group {group_idx + 1}: All {max_retries + 1} attempts failed. Last error: {type(e).__name__}: {e}")
+                            responses = [None] * len(miner_uids)  # Create empty responses for failed miners
+                
+                if responses is None:
+                    bt.logging.error(f"Group {group_idx + 1}: Failed to get any responses after all retries")
+                    responses = [None] * len(miner_uids)
+                
+                # Filter working responses with relaxed validation
                 working_miner_indices = []
                 working_responses = []
                 working_uids = []
                 
                 for idx, (uid, response) in enumerate(zip(miner_uids, responses)):
-                    has_response = bool(response and hasattr(response, 'response') and response.response)
-                    if has_response:
+                    # Debug logging for response structure
+                    bt.logging.debug(f"Miner {uid} response type: {type(response)}")
+                    if response:
+                        bt.logging.debug(f"Miner {uid} response attributes: {dir(response)}")
+                        if hasattr(response, 'results'):
+                            bt.logging.debug(f"Miner {uid} results: {response.results}")
+                        if hasattr(response, 'response'):
+                            bt.logging.debug(f"Miner {uid} response.response: {response.response}")
+                    
+                    # More flexible response validation - check multiple possible response formats
+                    has_response = False
+                    response_content = None
+                    
+                    if response:
+                        # Check for results attribute (correct format from miner)
+                        if hasattr(response, 'results') and response.results:
+                            has_response = True
+                            response_content = response.results
+                            bt.logging.debug(f"Miner {uid}: Valid response in 'results' attribute")
+                        # Check for response attribute (fallback)
+                        elif hasattr(response, 'response') and response.response:
+                            has_response = True
+                            response_content = response.response
+                            bt.logging.debug(f"Miner {uid}: Valid response in 'response' attribute")
+                        # Check if response itself is a string (direct response)
+                        elif isinstance(response, str) and response.strip():
+                            has_response = True
+                            response_content = response
+                            bt.logging.debug(f"Miner {uid}: Valid direct string response")
+                        # Check if response has any content (last resort)
+                        elif response and str(response).strip():
+                            has_response = True
+                            response_content = str(response)
+                            bt.logging.debug(f"Miner {uid}: Valid response content found")
+                        else:
+                            bt.logging.debug(f"Miner {uid}: No valid response content found")
+                    else:
+                        bt.logging.debug(f"Miner {uid}: No response object")
+                    
+                    if has_response and response_content:
                         working_miner_indices.append(idx)
-                        working_responses.append(response.response)
+                        working_responses.append(response_content)
                         working_uids.append(uid)
+                        bt.logging.info(f"Miner {uid}: Added to working miners with content length: {len(str(response_content))}")
+                    else:
+                        bt.logging.warning(f"Miner {uid}: Response validation failed - no usable content")
                 
                 bt.logging.info(f"Group {group_idx + 1}: {len(working_responses)}/{len(miner_uids)} working miners")
+                
+                # Additional debug info for troubleshooting
+                if len(working_responses) == 0:
+                    bt.logging.warning(f"Group {group_idx + 1}: No working miners found. Response details:")
+                    for i, (uid, response) in enumerate(zip(miner_uids, responses)):
+                        if response is None:
+                            bt.logging.warning(f"  Miner {uid}: Response is None")
+                        else:
+                            bt.logging.warning(f"  Miner {uid}: Response type={type(response)}, has_results={hasattr(response, 'results')}, has_response={hasattr(response, 'response')}")
+                            if hasattr(response, 'results'):
+                                bt.logging.warning(f"    results content: {response.results}")
+                            if hasattr(response, 'response'):
+                                bt.logging.warning(f"    response.response content: {response.response}")
+                else:
+                    bt.logging.info(f"Group {group_idx + 1}: Working miners: {working_uids}")
+                    for uid, content in zip(working_uids, working_responses):
+                        bt.logging.debug(f"  Miner {uid}: Content length {len(str(content))}")
                 
                 # Evaluate working miners in tournament
                 if working_responses and len(working_responses) >= 2:  # Need at least 2 miners for tournament
@@ -259,34 +436,95 @@ class Validator(BaseValidatorNeuron):
                         # Update evaluation round for this group
                         self.evaluation_round = group_idx
                         
-                        # Evaluate using tournament system
-                        working_rewards, _ = self.evaluator.evaluate(query, working_responses, working_uids)
+                        # Run multiple evaluation rounds for this group
+                        group_scores = {}  # uid -> list of scores from all rounds
                         
-                        bt.logging.info(f"Group {group_idx + 1} tournament results: {working_rewards}")
+                        for round_num in range(self.num_evaluation_rounds):
+                            bt.logging.info(f"Group {group_idx + 1}: Running evaluation round {round_num + 1}/{self.num_evaluation_rounds}")
+                            
+                            # Evaluate using tournament system (this runs multiple criteria internally)
+                            working_rewards, _ = self.evaluator.evaluate(query, working_responses, working_uids)
+                            
+                            bt.logging.info(f"Group {group_idx + 1}, Round {round_num + 1}: Results {working_rewards}")
+                            
+                            # Store scores from this round
+                            for uid, reward in zip(working_uids, working_rewards):
+                                if uid not in group_scores:
+                                    group_scores[uid] = []
+                                group_scores[uid].append(reward)
+                                bt.logging.debug(f"Miner {uid}: Round {round_num + 1} score: {reward:.4f}")
+                        
+                        # Calculate average score for each miner in this group
+                        for uid, round_scores in group_scores.items():
+                            if uid not in miner_scores:
+                                miner_scores[uid] = []
+                            
+                            # Calculate average score for this miner across all rounds
+                            avg_group_score = sum(round_scores) / len(round_scores)
+                            miner_scores[uid].append(avg_group_score)
+                            
+                            bt.logging.info(f"Miner {uid}: Group {group_idx + 1} average score: {avg_group_score:.4f} (from {len(round_scores)} rounds)")
+                        
                         total_miners_evaluated += len(working_responses)
-                        
-                        # Collect ELO ratings for this group
-                        all_miner_uids.extend(working_uids)
-                        all_rewards.extend(working_rewards.tolist() if hasattr(working_rewards, 'tolist') else working_rewards)
                         
                     except Exception as e:
                         bt.logging.error(f"Failed to evaluate group {group_idx + 1}: {e}")
                         continue
+
                 else:
-                    bt.logging.warning(f"Group {group_idx + 1}: Insufficient working miners for tournament evaluation")
+                    bt.logging.warning(f"Group {group_idx + 1}: No working miners for evaluation")
             
-            # Submit ELO ratings for all evaluated miners
-            if self.elo_sync_manager and all_miner_uids and all_rewards:
-                bt.logging.info(f"Submitting ELO ratings for {len(all_miner_uids)} miners")
-                self.submit_elo_ratings(self.current_epoch, all_miner_uids, all_rewards)
+            # Calculate average scores for each miner
+            bt.logging.info(f"Tournament evaluation summary: {total_miners_evaluated} miners evaluated across {len(all_groups)} groups")
+            bt.logging.info(f"Collected scores for {len(miner_scores)} unique miners")
+            
+            # Calculate average ELO scores and prepare for submission
+            final_miner_uids = []
+            final_average_scores = []
+            
+            for uid, scores in miner_scores.items():
+                if scores:  # Only include miners with valid scores
+                    avg_score = sum(scores) / len(scores)
+                    final_miner_uids.append(uid)
+                    final_average_scores.append(avg_score)
+                    bt.logging.info(f"Miner {uid}: {len(scores)} scores, average: {avg_score:.4f}")
+            
+            # Submit average ELO ratings to Supabase
+            if self.elo_sync_manager and final_miner_uids and final_average_scores:
+                bt.logging.info(f"Submitting average ELO ratings for {len(final_miner_uids)} miners")
+                self.submit_elo_ratings(self.current_epoch, final_miner_uids, final_average_scores)
+                
+                # Store current scores for next cycle
+                self.store_current_elo_scores(final_miner_uids, final_average_scores)
+                
+                # Check if epoch is finalized and consensus is available
+                consensus = self.elo_sync_manager.get_epoch_consensus(self.current_epoch)
+                
+                if consensus:
+                    # Epoch is finalized, use consensus to set weights
+                    bt.logging.info(f"✅ Epoch {self.current_epoch} consensus available, setting weights")
+                    self.set_weights_from_consensus(consensus)
+                else:
+                    # Epoch not finalized yet, weights will be set during next sync
+                    bt.logging.info(f"⏳ Epoch {self.current_epoch} not finalized yet, waiting for consensus from all validators")
+            else:
+                bt.logging.warning("No ELO data collected - no miners were successfully evaluated")
             
             # Update epoch counter after all groups processed
             self.current_epoch += 1
             self.evaluation_round = 0
             
-            bt.logging.info(f"Tournament evaluation complete. Epoch {self.current_epoch - 1} finished. Total miners evaluated: {total_miners_evaluated}")
+            # Increment validation cycle count
+            self.validation_cycle_count += 1
             
-            # Simple epoch finalization - no waiting, no thresholds
+            # Check if we should refresh scores
+            if self.validation_cycle_count >= self.refresh_scores_after_cycles:
+                self.refresh_elo_scores()
+            
+            bt.logging.info(f"Tournament evaluation complete. Epoch {self.current_epoch - 1} finished. Total miners evaluated: {total_miners_evaluated}")
+            bt.logging.info(f"Validation cycle {self.validation_cycle_count}/{self.refresh_scores_after_cycles}")
+            
+            # Finalize epoch and push to Bittensor
             if self.elo_sync_manager:
                 completed_epoch = self.current_epoch - 1
                 bt.logging.info(f"🎯 Finalizing epoch {completed_epoch}")
@@ -305,30 +543,13 @@ class Validator(BaseValidatorNeuron):
                         bt.logging.warning(f"⚠️ Failed to push epoch {completed_epoch} to Bittensor")
                 else:
                     bt.logging.warning(f"⚠️ No consensus available for epoch {completed_epoch}")
-                                    # Fallback to local weights
-                self.set_weights_from_elo()
+                    bt.logging.info("⏳ Waiting for consensus to become available")
             else:
-                # No sync manager, use local weights
-                bt.logging.info("🔄 No ELO sync manager, using local weights")
-                self.set_weights_from_elo()
+                bt.logging.info("🔄 No ELO sync manager available")
             
-            # Check if epoch should end
-            current_time = time.time()
-            if current_time - self.epoch_start_time >= self.epoch_duration:
-                # Epoch ended, increment and reset
-                self.current_epoch += 1
-                self.epoch_start_time = current_time
-                bt.logging.info(f"🔄 New epoch started: {self.current_epoch}")
-                
-                # Log epoch status
-                if self.elo_sync_manager:
-                    self.get_epoch_status()
-                    # Cleanup old epochs from database
-                    self.elo_sync_manager.cleanup_old_epochs(keep_last=10)
-            else:
-                # Sleep until epoch ends
-                time_until_epoch_end = self.epoch_duration - (current_time - self.epoch_start_time)
-                time.sleep(min(60, time_until_epoch_end))  # Sleep in 1-minute chunks
+            # Simple epoch management - wait for next cycle
+            bt.logging.info(f"🔄 Waiting for next validation cycle...")
+            await asyncio.sleep(60)  # Wait 1 minute before next cycle
             
         except Exception as e:
             bt.logging.error(f"Error during tournament forward: {e}")
@@ -386,53 +607,26 @@ class Validator(BaseValidatorNeuron):
     
     def set_weights_from_elo(self):
         """
-        Set blockchain weights based on local ELO scores.
+        Set blockchain weights based on consensus ELO from Supabase.
         This method should be called during sync to update weights.
         """
         try:
-            # Check if evaluator and ELO system are available
-            if not hasattr(self, 'evaluator') or not hasattr(self.evaluator, 'elo_system'):
-                bt.logging.warning("No ELO system available, cannot set weights")
-                return
-            
-            # Get ELO rankings from the ELO system
-            elo_rankings = self.evaluator.elo_system.get_rankings()
-            
-            if not elo_rankings:
-                bt.logging.warning("No ELO rankings available, cannot set weights")
-                return
-            
-            # Create weight tensor based on ELO rankings
-            weights = torch.zeros(self.metagraph.n.item())
-            
-            # Set weights based on ELO ranking (higher ELO = higher weight)
-            for rank, (uid, elo_score) in enumerate(elo_rankings):
-                if uid < len(weights):
-                    # Weight formula: higher ELO gets higher weight
-                    # Normalize ELO scores to 0-1 range for weights
-                    if elo_rankings:
-                        max_elo = max(score for _, score in elo_rankings)
-                        min_elo = min(score for _, score in elo_rankings)
-                        
-                        if max_elo > min_elo:
-                            normalized_weight = (elo_score - min_elo) / (max_elo - min_elo)
-                        else:
-                            normalized_weight = 0.5  # All miners get equal weight if ELO is same
-                        
-                        weights[uid] = normalized_weight
-            
-            # Normalize weights to sum to 1.0
-            if weights.sum() > 0:
-                weights = weights / weights.sum()
-            
-            bt.logging.info(f"Set weights from ELO rankings. Top 5 miners: {elo_rankings[:5]}")
-            bt.logging.info(f"Weight distribution: min={weights.min():.4f}, max={weights.max():.4f}, sum={weights.sum():.4f}")
-            
-            # Store weights for later use (they will be applied during sync)
-            self.elo_weights = weights
-            
+            # Get consensus ELO from Supabase for current epoch
+            if self.elo_sync_manager:
+                consensus = self.elo_sync_manager.get_epoch_consensus(self.current_epoch)
+                
+                if consensus:
+                    # Use consensus ELO to set weights
+                    bt.logging.info(f"Using consensus ELO from Supabase for epoch {self.current_epoch}")
+                    self.set_weights_from_consensus(consensus)
+                    return
+                else:
+                    bt.logging.warning(f"No consensus ELO available for epoch {self.current_epoch}")
+            else:
+                bt.logging.warning("No ELO sync manager available")
+                
         except Exception as e:
-            bt.logging.error(f"Error setting weights from ELO: {e}")
+            bt.logging.error(f"Error getting consensus ELO: {e}")
 
     def set_weights(self):
         """
@@ -445,10 +639,10 @@ class Validator(BaseValidatorNeuron):
                 bt.logging.info("✅ Using consensus-based weights for blockchain weight assignment")
                 raw_weights = self.consensus_weights.numpy()
             elif hasattr(self, 'elo_weights') and self.elo_weights is not None:
-                bt.logging.info("🔄 Using local ELO-based weights for blockchain weight assignment")
+                bt.logging.info("🔄 Using ELO-based weights for blockchain weight assignment")
                 raw_weights = self.elo_weights.numpy()
             else:
-                bt.logging.warning("⚠️ No ELO weights available, falling back to default weights")
+                bt.logging.warning("⚠️ No consensus or ELO weights available, falling back to default weights")
                 # Fallback to default weight setting
                 super().set_weights()
                 return
