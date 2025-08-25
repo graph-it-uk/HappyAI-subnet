@@ -13,18 +13,13 @@ import torch
 
 from app.chain.base.validator import BaseValidatorNeuron
 from app.chain.evaluation.evaluator import Evaluator
-from app.chain.evaluation.simple_elo_sync import SimpleELOSync
+from app.chain.evaluation.simple_elo_sync import EloManager
 from app.chain.protocol import CompletionSynapse
 from app.chain.synthetics.generator import SyntheticsGenerator
 
-from app.chain.utils.uids import get_miners_uids, tournament_group_miners
+from app.chain.utils.uids import tournament_group_miners
 from app.chain.worker import Worker
 from supabase import create_client
-
-BAD_MINER_THRESHOLD = -5
-MAX_BAD_RESPONSES_TOLERANCE = 2
-
-
 
 
 class Validator(BaseValidatorNeuron):
@@ -60,51 +55,35 @@ class Validator(BaseValidatorNeuron):
                 self.supabase = None
         
         # Initialize ELO sync manager if Supabase is enabled
-        self.elo_sync_manager = None
+        self.elo_manager = None
         if self.supabase_mode and self.supabase:
             try:
                 supabase_url = os.environ.get("SUPABASE_URL")
                 supabase_key = os.environ.get("SUPABASE_KEY")
                 if supabase_url and supabase_key:
-                    self.elo_sync_manager = SimpleELOSync(supabase_url, supabase_key)
-                    # Set the validator instance so ELO sync can access metagraph and set weights
-                    self.elo_sync_manager.set_validator_instance(self)
-                    bt.logging.info("✅ Simple ELO sync initialized successfully with validator instance")
+                    self.elo_manager = EloManager(supabase_url, supabase_key, self)
+                    bt.logging.info("ELO sync initialized successfully with validator instance")
                 else:
-                    bt.logging.warning("⚠️ Supabase credentials not found, ELO sync disabled")
+                    bt.logging.warning("Supabase credentials not found, ELO sync disabled")
             except Exception as e:
-                bt.logging.error(f"❌ Failed to initialize ELO sync manager: {e}")
-                self.elo_sync_manager = None
+                bt.logging.error(f"Failed to initialize ELO sync manager: {e}")
+                self.elo_manager = None
         
         # Initialize evaluator
         self.evaluator = Evaluator(llm_client, self.worker)
-        bt.logging.info("✅ Evaluator initialized")
         
-        # Simple epoch management
+        # Epoch management
         self.current_epoch = 0
-        self.epoch_start_time = time.time()
         self.epoch_duration = 600  # 10 minutes per epoch
-        self.spec_version = 1  # Version for weight setting
         self.tournament_group_size = 6  # Default group size for tournaments
-        
-        # Configuration for evaluation rounds
-        self.num_evaluation_rounds = int(os.getenv('NUM_EVALUATION_ROUNDS', 3))  # Default: 3 rounds per group
-        bt.logging.info(f"Configuration: {self.num_evaluation_rounds} evaluation rounds per group")
+        self.num_evaluation_rounds = 3  
+        self.evaluation_round = 0
         
         # Store previous ELO scores for miners
         self.previous_elo_scores = {}
         
-        # ELO scores will be refreshed every 10 epochs
-        
-
-        
-        self.bad_miners_register = {}
-        
-        # Load banned miners
         self.banned_coldkeys = set()
-        self.banned_uids_cache = []
         self.load_banned_miners()
-        self.global_miner_index = 0
         
         # Set validator UID for ELO sync (will be updated in sync)
         self.validator_uid = None
@@ -165,7 +144,7 @@ class Validator(BaseValidatorNeuron):
         Returns:
             Dict mapping miner UID to accumulated ELO score
         """
-        if not self.elo_sync_manager:
+        if not self.elo_manager:
             bt.logging.debug("No ELO sync manager available")
             return {}
             
@@ -255,7 +234,7 @@ class Validator(BaseValidatorNeuron):
             miner_uids: List of miner UIDs evaluated
             rewards: List of reward scores for each miner
         """
-        if not self.elo_sync_manager:
+        if not self.elo_manager:
             bt.logging.debug("No ELO sync manager available")
             return
             
@@ -286,7 +265,7 @@ class Validator(BaseValidatorNeuron):
                     validator_hotkey = self.metagraph.hotkeys[self.validator_uid] if self.validator_uid < len(self.metagraph.hotkeys) else None
                     
                     if validator_hotkey:
-                        success = self.elo_sync_manager.submit_elo_rating(self.current_epoch, miner_hotkey, accumulated_elo, validator_hotkey)
+                        success = self.elo_manager.submit_elo_rating(self.current_epoch, miner_hotkey, accumulated_elo, validator_hotkey)
                         if success:
                             bt.logging.debug(f"✅ ELO rating {accumulated_elo} (previous: {previous_elo} + bonus: +{elo_bonus}) submitted for miner {uid} ({miner_hotkey})")
                         else:
@@ -297,40 +276,88 @@ class Validator(BaseValidatorNeuron):
         except Exception as e:
             bt.logging.error(f"Error submitting ELO ratings: {e}")
 
-    def get_tournament_groups(self, group_size: int = 6, exclude: List[int] = None, specified_miners: List[int] = None) -> List[List[int]]:
+    def calculate_and_set_elo_weights(self, final_scores: Dict[str, Dict]):
         """
-        Get all tournament groups for this epoch.
+        Calculate normalized weights (0 to 1) based on ELO scores and push to blockchain.
         
         Args:
-            group_size (int): Number of miners per group
-            exclude (List[int]): List of UIDs to exclude
-            specified_miners (List[int]): List of specific miners to use
-            
-        Returns:
-            List[List[int]]: All tournament groups for this epoch
+            final_scores: Dict mapping miner_hotkey to {final_elo, uid}
         """
+        try:
+            if not final_scores:
+                bt.logging.warning("No final scores available for weight calculation")
+                return
+            
+            # Extract ELO scores and UIDs
+            elo_data = []
+            for miner_hotkey, score_data in final_scores.items():
+                uid = score_data['uid']
+                final_elo = score_data['final_elo']
+                elo_data.append((uid, final_elo))
+            
+            if not elo_data:
+                bt.logging.warning("No valid ELO data for weight calculation")
+                return
+            
+            # Sort by ELO score (lowest to highest)
+            elo_data.sort(key=lambda x: x[1])
+            
+            # Create weight tensor
+            weights = torch.zeros(self.metagraph.n.item())
+            
+            # Calculate normalized weights (0 to 1)
+            min_elo = elo_data[0][1]  # Lowest ELO score
+            max_elo = elo_data[-1][1]  # Highest ELO score
+            
+            if max_elo == min_elo:
+                # All miners have same ELO - give equal weights
+                for uid, _ in elo_data:
+                    weights[uid] = 1.0 / len(elo_data)
+                bt.logging.info(f"All miners have same ELO ({min_elo}), using equal weights")
+            else:
+                # Normalize from 0 to 1
+                for uid, elo_score in elo_data:
+                    # Normalize: (elo - min_elo) / (max_elo - min_elo)
+                    normalized_weight = (elo_score - min_elo) / (max_elo - min_elo)
+                    weights[uid] = normalized_weight
+                    bt.logging.info(f"Miner {uid}: ELO {elo_score} -> Weight {normalized_weight:.4f}")
+                
+                bt.logging.info(f"ELO normalization: min={min_elo}, max={max_elo}")
+            
+            # Store weights for use in set_weights method
+            self.elo_weights = weights
+            
+            # Push weights to blockchain immediately
+            self.set_weights()
+            
+            bt.logging.info(f"✅ ELO weights calculated and pushed to blockchain: {len(elo_data)} miners")
+            
+        except Exception as e:
+            bt.logging.error(f"Error calculating ELO weights: {e}")
+            bt.logging.debug(print_exception(type(e), e, e.__traceback__))
 
-        self.evaluation_round = 0
+    def should_set_weights(self) -> bool:
+        """
+        Override base neuron logic to ensure weights are set every epoch.
+        This is critical for the tournament evaluation system.
+        """
+        # Always set weights after tournament evaluation
+        if hasattr(self, 'elo_weights') and self.elo_weights is not None:
+            return True
         
-        return tournament_group_miners(self, exclude, specified_miners, group_size)
+        # Fallback to base logic for other cases
+        return super().should_set_weights()
 
     async def forward(self):
         """
-        Validator forward pass with tournament evaluation. Consists of:
-        - Generating the query
-        - Creating tournament groups
-        - Evaluating each group with multiple criteria
-        - Collecting scores locally
-        - Calculating average ELO scores
-        - Submitting average ELO ratings to Supabase
-        - Setting weights based on consensus
+        Validator forward pass with tournament evaluation.
         """
         try:
             # Get banned miner UIDs to exclude from selection
             banned_uids = self.get_banned_miner_uids()
             
             # Get all tournament groups for this epoch
-            all_groups = self.get_tournament_groups(group_size=self.tournament_group_size, exclude=banned_uids)
+            all_groups = tournament_group_miners(self, banned_uids, None, self.tournament_group_size)
             bt.logging.info(f"Created {len(all_groups)} tournament groups for epoch {self.current_epoch}")
             
             # Get all unique miner UIDs from all groups
@@ -561,7 +588,7 @@ class Validator(BaseValidatorNeuron):
                     bt.logging.info(f"Miner {uid}: {len(elo_bonuses)} ELO bonuses, total: +{total_elo_bonus}")
             
             # Submit total ELO bonuses to Supabase
-            if self.elo_sync_manager and final_miner_uids and final_total_elo_bonuses:
+            if self.elo_manager and final_miner_uids and final_total_elo_bonuses:
                 bt.logging.info(f"Submitting total ELO bonuses for {len(final_miner_uids)} miners")
                 self.submit_elo_ratings(self.current_epoch, final_miner_uids, final_total_elo_bonuses)
                 
@@ -575,29 +602,24 @@ class Validator(BaseValidatorNeuron):
                     previous_elo = previous_scores.get(uid, 1000)
                     final_elo = previous_elo + total_elo_bonus
                     
-                    # Calculate weight (normalize to 0-1)
-                    final_weight = min(1.0, final_elo / 1000.0)
-                    
-                    # Get miner hotkey
+                    # Store final ELO score (not normalized yet)
                     if uid < len(self.metagraph.hotkeys):
                         miner_hotkey = self.metagraph.hotkeys[uid]
                         final_scores[miner_hotkey] = {
                             'final_elo': final_elo,
-                            'final_weight': final_weight
+                            'uid': uid  # Store UID for weight calculation
                         }
                 
                 # Store final scores for this validator
-                if final_scores and self.elo_sync_manager:
+                if final_scores and self.elo_manager:
                     validator_hotkey = self.metagraph.hotkeys[self.validator_uid] if self.validator_uid < len(self.metagraph.hotkeys) else None
                     if validator_hotkey:
-                        self.elo_sync_manager.store_validator_final_scores(self.current_epoch, validator_hotkey, final_scores)
+                        self.elo_manager.store_validator_final_scores(self.current_epoch, validator_hotkey, final_scores)
                         
-                        # Push weights to Bittensor immediately
-                        success = self.elo_sync_manager.push_weights_to_bittensor(self.current_epoch, validator_hotkey)
-                        if success:
-                            bt.logging.info(f"✅ Epoch {self.current_epoch} weights pushed to Bittensor by validator {validator_hotkey}")
-                        else:
-                            bt.logging.warning(f"⚠️ Failed to push epoch {self.current_epoch} weights to Bittensor")
+                        # Calculate normalized weights (0 to 1) based on ELO scores
+                        self.calculate_and_set_elo_weights(final_scores)
+                        
+                        bt.logging.info(f"✅ Epoch {self.current_epoch} ELO weights calculated and set")
                     else:
                         bt.logging.error(f"❌ Validator hotkey not available for UID {self.validator_uid}")
             else:
@@ -622,95 +644,18 @@ class Validator(BaseValidatorNeuron):
             bt.logging.error(f"Error during tournament forward: {e}")
             bt.logging.debug(print_exception(type(e), e, e.__traceback__))
 
-    def set_weights_from_consensus(self, consensus_ratings: Dict[int, Dict]):
-        """
-        Set blockchain weights based on consensus ELO ratings from Supabase.
-        
-        Args:
-            consensus_ratings: Dict mapping miner_uid to consensus data
-        """
-        if not consensus_ratings:
-            bt.logging.warning("No consensus ratings available")
-            return
-        
-        try:
-            bt.logging.info(f"Setting weights from consensus for {len(consensus_ratings)} miners")
-            
-            # Create weight tensor based on consensus ELO ratings
-            weights = torch.zeros(self.metagraph.n.item())
-            
-            # Set weights based on consensus ratings
-            for uid, consensus_data in consensus_ratings.items():
-                # Ensure uid is an integer for proper comparison and indexing
-                try:
-                    uid_int = int(uid)
-                    if uid_int < len(weights):
-                        # Use the consensus weight directly (already normalized 0-1)
-                        weights[uid_int] = consensus_data['final_weight']
-                        bt.logging.debug(f"Miner {uid_int}: Consensus ELO {consensus_data['final_elo']}, Weight {consensus_data['final_weight']:.4f}")
-                    else:
-                        bt.logging.warning(f"Miner UID {uid_int} out of bounds (max: {len(weights)-1})")
-                except (ValueError, TypeError) as e:
-                    bt.logging.error(f"Invalid UID format '{uid}': {e}")
-                    continue
-            
-            # Check if we have any valid weights
-            if weights.sum() == 0:
-                bt.logging.warning("No valid weights found in consensus data")
-                return
-            
-            # Normalize weights to sum to 1.0
-            if weights.sum() > 0:
-                weights = weights / weights.sum()
-            
-            bt.logging.info(f"Set weights from consensus ratings. Miners: {len(consensus_ratings)}")
-            bt.logging.info(f"Weight distribution: min={weights.min():.4f}, max={weights.max():.4f}, sum={weights.sum():.4f}")
-            
-            # Store weights for later use
-            self.consensus_weights = weights
-            
-        except Exception as e:
-            bt.logging.error(f"Error setting weights from consensus: {e}")
-            bt.logging.debug(f"Consensus data type: {type(consensus_ratings)}")
-            bt.logging.debug(f"Consensus data keys: {list(consensus_ratings.keys())[:5] if consensus_ratings else 'None'}")
-            # Fallback to local ELO
-            self.set_weights_from_elo()
-    
     def get_epoch_status(self):
         """Get current epoch status"""
-        if not self.elo_sync_manager:
+        if not self.elo_manager:
             return None
             
         try:
-            status = self.elo_sync_manager.get_epoch_status(self.current_epoch)
+            status = self.elo_manager.get_epoch_status(self.current_epoch)
             bt.logging.info(f"📊 Epoch {self.current_epoch} status: {status}")
             return status
         except Exception as e:
             bt.logging.error(f"Error getting epoch status: {e}")
             return None
-    
-    def set_weights_from_elo(self):
-        """
-        Set blockchain weights based on consensus ELO from Supabase.
-        This method should be called during sync to update weights.
-        """
-        try:
-            # Get consensus ELO from Supabase for current epoch
-            if self.elo_sync_manager:
-                consensus = self.elo_sync_manager.get_epoch_consensus(self.current_epoch)
-                
-                if consensus:
-                    # Use consensus ELO to set weights
-                    bt.logging.info(f"Using consensus ELO from Supabase for epoch {self.current_epoch}")
-                    self.set_weights_from_consensus(consensus)
-                    return
-                else:
-                    bt.logging.warning(f"No consensus ELO available for epoch {self.current_epoch}")
-            else:
-                bt.logging.warning("No ELO sync manager available")
-                
-        except Exception as e:
-            bt.logging.error(f"Error getting consensus ELO: {e}")
 
     def set_weights(self):
         """
@@ -718,15 +663,12 @@ class Validator(BaseValidatorNeuron):
         Overrides the base validator method to use tournament-based weights.
         """
         try:
-            # Priority: Consensus weights > ELO weights > Default weights
-            if hasattr(self, 'consensus_weights') and self.consensus_weights is not None:
-                bt.logging.info("✅ Using consensus-based weights for blockchain weight assignment")
-                raw_weights = self.consensus_weights.numpy()
-            elif hasattr(self, 'elo_weights') and self.elo_weights is not None:
-                bt.logging.info("🔄 Using ELO-based weights for blockchain weight assignment")
+            # Priority: ELO weights > Default weights
+            if hasattr(self, 'elo_weights') and self.elo_weights is not None:
+                bt.logging.info("✅ Using ELO-based weights for blockchain weight assignment")
                 raw_weights = self.elo_weights.numpy()
             else:
-                bt.logging.warning("⚠️ No consensus or ELO weights available, falling back to default weights")
+                bt.logging.warning("⚠️ No ELO weights available, falling back to default weights")
                 # Fallback to default weight setting
                 super().set_weights()
                 return
@@ -736,6 +678,14 @@ class Validator(BaseValidatorNeuron):
             bt.logging.debug(f"ELO weights sum: {raw_weights.sum()}")
             bt.logging.debug(f"ELO weights max: {raw_weights.max()}")
             bt.logging.debug(f"ELO weights min: {raw_weights.min()}")
+            
+            # Show weight distribution for debugging
+            non_zero_weights = raw_weights[raw_weights > 0]
+            if len(non_zero_weights) > 0:
+                bt.logging.info(f"📊 Weight distribution: {len(non_zero_weights)} miners with weights")
+                bt.logging.info(f"   Min weight: {non_zero_weights.min():.4f}")
+                bt.logging.info(f"   Max weight: {non_zero_weights.max():.4f}")
+                bt.logging.info(f"   Weight sum: {non_zero_weights.sum():.4f}")
             
             # Log weight setting process to Supabase if available
             if self.supabase_mode and self.supabase:
@@ -787,8 +737,7 @@ class Validator(BaseValidatorNeuron):
                 uids=uint_uids,
                 weights=uint_weights,
                 wait_for_finalization=False,
-                wait_for_inclusion=False,
-                version_key=self.spec_version,
+                wait_for_inclusion=False
             )
             bt.logging.info(f"Set ELO-based weights: {result}")
             
@@ -797,40 +746,6 @@ class Validator(BaseValidatorNeuron):
             bt.logging.warning("Falling back to default weight setting")
             # Fallback to default weight setting
             super().set_weights()
-
-    def test_tournament_integration(self):
-        """
-        Test method to verify tournament integration works correctly.
-        This should be called before running the full validator.
-        """
-        try:
-            bt.logging.info("Testing tournament integration...")
-            
-            # Test 1: Tournament group creation
-            test_groups = self.get_tournament_groups(group_size=6, exclude=[])
-            bt.logging.info(f"✓ Tournament groups created: {len(test_groups)} groups")
-            
-            # Test 2: ELO system availability
-            if hasattr(self.evaluator, 'elo_system') and self.evaluator.elo_system:
-                bt.logging.info("✓ ELO system available")
-            else:
-                bt.logging.error("✗ ELO system not available")
-                return False
-            
-            # Test 3: Weight setting capability
-            try:
-                self.set_weights_from_elo()
-                bt.logging.info("✓ ELO weight setting works")
-            except Exception as e:
-                bt.logging.error(f"✗ ELO weight setting failed: {e}")
-                return False
-            
-            bt.logging.success("Tournament integration test passed!")
-            return True
-            
-        except Exception as e:
-            bt.logging.error(f"Tournament integration test failed: {e}")
-            return False
 
     def run(self):
         # Check that validator is registered on the network.
@@ -845,18 +760,13 @@ class Validator(BaseValidatorNeuron):
                 bt.logging.info(f"Validator UID set to: {self.validator_uid}")
                 
                 # Set hotkey in ELO sync manager if available
-                if self.elo_sync_manager:
+                if self.elo_manager:
                     validator_hotkey = self.wallet.hotkey.ss58_address
-                    self.elo_sync_manager.set_validator_hotkey(validator_hotkey)
+                    self.elo_manager.set_validator_hotkey(validator_hotkey)
                     bt.logging.info(f"Validator hotkey set in ELO sync manager: {validator_hotkey}")
                     
             except ValueError:
                 bt.logging.warning("Validator not found in metagraph")
-        
-        # Test tournament integration before starting
-        if not self.test_tournament_integration():
-            bt.logging.error("Tournament integration test failed. Exiting.")
-            return
         
         self.axon.start()
         bt.logging.info("Axon started and ready to handle OfficialSynapse requests.")

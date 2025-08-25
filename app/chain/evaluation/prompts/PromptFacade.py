@@ -34,23 +34,5 @@ class PromptFacade:
             return template.render(**kwargs)
         except TemplateError as e:
             raise ValueError(f"Error rendering template: {str(e)}")
-
-    @staticmethod
-    def get_template_info(template):
-        env = PromptFacade._get_env()
-        template_path = f"{template}.j2"
-        with open(env.loader.get_source(env, template_path)[1]) as file:
-            post = frontmatter.load(file)
-
-        ast = env.parse(post.content)
-        variables = meta.find_undeclared_variables(ast)
-
-        return {
-            "name": template,
-            "description": post.metadata.get("description", "No description provided"),
-            "author": post.metadata.get("author", "Unknown"),
-            "variables": list(variables),
-            "frontmatter": post.metadata,
-        }
     
     

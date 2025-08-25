@@ -25,8 +25,6 @@ def check_uid_availability(
     if not metagraph.axons[uid].is_serving:
         return False
     
-    # Note: We no longer filter by IP address here since we want to include
-    # non-working miners but give them zero scores after normalization
     
     # Filter validator permit > 1024 stake.
     if metagraph.validator_permit[uid]:
@@ -209,7 +207,7 @@ def create_balanced_groups(candidate_uids: List[int], target_size: int = 6, rand
 
 def tournament_group_miners(self, exclude: List[int] = None, specified_miners: List[int] = None, target_size: int = 6) -> List[List[int]]:
     """
-    Creates tournament groups of miners using optimal grouping (4-7 miners per group).
+    Creates tournament groups of miners using optimal grouping.
     
     Args:
         exclude (List[int]): List of UIDs to exclude from selection
@@ -246,56 +244,10 @@ def tournament_group_miners(self, exclude: List[int] = None, specified_miners: L
     # Generate deterministic seed for grouping consistency
     current_epoch = getattr(self, 'current_epoch', 0)
     evaluation_round = getattr(self, 'evaluation_round', 0)
-    random_seed = random.randint(1, 1000000)  # Random seed for each evaluation cycle
+    random_seed = random.randint(1, 1000000)
     
     seed = f"{current_epoch}_{evaluation_round}_{random_seed}_{len(candidate_uids)}"
     hash_seed = int(hashlib.md5(seed.encode()).hexdigest()[:8], 16)
 
     # Use the separated grouping function
     return create_balanced_groups(candidate_uids, target_size, hash_seed)
-
-def get_miners_uids(self, k: int, exclude: List[int] = None, specified_miners: List[int] = None) -> torch.LongTensor:
-    """
-    Returns miners for tournament evaluation using the new grouping system.
-    
-    Args:
-        k (int): Number of miners to return (will be adjusted to group size)
-        exclude (List[int]): List of UIDs to exclude from selection
-        specified_miners (List[int]): List of specific miners to use
-        
-    Returns:
-        uids (torch.LongTensor): Miners selected for tournament evaluation
-    """
-    # Default group size, can be made configurable
-    group_size = getattr(self, 'tournament_group_size', 6)
-    
-    # Get tournament groups
-    groups = self.tournament_group_miners(exclude, specified_miners, group_size)
-    
-    if not groups:
-        return torch.tensor([])
-    
-    # Select first group for evaluation (can be modified to select random group)
-    selected_group = groups[0]
-    
-    bt.logging.info(f"Selected tournament group: {selected_group}")
-    return torch.tensor(selected_group)
-
-
-def get_validator_uids(self, remove_self: bool = True) -> torch.LongTensor:
-    """
-    Returns all validator UIDs from the given metagraph, i.e. all UIDs
-    where metagraph.validator_permit[uid] == True.
-    """
-
-    bt.logging.info(f"Getting validator uids from metagraph.")
-    bt.logging.info(f"Validator permit: {self.metagraph.validator_permit}")
-    validator_permit = torch.tensor(self.metagraph.validator_permit, dtype=torch.bool)
-    validator_uids = torch.where(validator_permit)[0].long()
-    if remove_self:
-        self_uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
-        bt.logging.info(f"Self UID: {self_uid}")
-        validator_uids = validator_uids[validator_uids != self_uid]
-
-    bt.logging.info(f"Validator UIDs (after removal): {validator_uids}")
-    return validator_uids

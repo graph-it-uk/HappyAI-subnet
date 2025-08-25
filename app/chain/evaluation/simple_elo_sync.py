@@ -11,13 +11,13 @@ import bittensor as bt
 from supabase import create_client, Client
 
 
-class SimpleELOSync:
+class EloManager:
     """
     Independent ELO sync - each validator works independently.
     No consensus, no waiting - just store scores and push weights.
     """
     
-    def __init__(self, supabase_url: str, supabase_key: str):
+    def __init__(self, supabase_url: str, supabase_key: str, validator_instance=None):
         # Test connection BEFORE creating the object
         test_client = create_client(supabase_url, supabase_key)
         try:
@@ -53,11 +53,8 @@ class SimpleELOSync:
         
         # Only create the object if connection test passes
         self.supabase: Client = test_client
-        self.validator_instance = None
-    
-    def set_validator_instance(self, validator):
-        """Set validator instance for metagraph access"""
-        self.validator_instance = validator
+        self.validator_instance = validator_instance
+        self.validator_hotkey = None
     
     def set_validator_hotkey(self, validator_hotkey: str):
         """Set validator hotkey for ELO sync operations"""
@@ -184,33 +181,3 @@ class SimpleELOSync:
         except Exception as e:
             bt.logging.error(f"❌ Failed to push epoch {epoch} to Bittensor: {e}")
             return False
-    
-    def cleanup_old_epochs(self, keep_last: int = 500):
-        """Keep only recent epochs for historical tracking"""
-        try:
-            # Get all epochs
-            result = self.supabase.table('historical_scores').select('epoch').order('epoch', desc=True).execute()
-            
-            if not result.data:
-                return
-            
-            epochs = [row['epoch'] for row in result.data]
-            if len(epochs) <= keep_last:
-                return
-            
-            # Delete old epochs
-            cutoff_epoch = epochs[keep_last]
-            
-            # Delete old submissions
-            self.supabase.table('elo_submissions').delete().lt('epoch', cutoff_epoch).execute()
-            
-            # Delete old final scores
-            self.supabase.table('validator_final_scores').delete().lt('epoch', cutoff_epoch).execute()
-            
-            # Delete old historical scores
-            self.supabase.table('historical_scores').delete().lt('epoch', cutoff_epoch).execute()
-            
-            bt.logging.info(f"🗑️ Cleaned up epochs older than {cutoff_epoch}")
-            
-        except Exception as e:
-            bt.logging.error(f"❌ Failed to cleanup old epochs: {e}")

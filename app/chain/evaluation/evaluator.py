@@ -8,7 +8,6 @@ import instructor
 import torch
 
 from supabase import create_client
-from app.chain.evaluation.elo_system import ELOSystem
 from app.chain.evaluation.models import TournamentResult
 from app.chain.evaluation.prompts.PromptFacade import PromptFacade
 import bittensor as bt
@@ -29,9 +28,7 @@ class Evaluator:
             return
 
         self.worker = worker
-        
-        # Initialize ELO system for tournament mode
-        self.elo_system = ELOSystem()
+    
 
         self.prompt_facade = PromptFacade()
         
@@ -54,7 +51,6 @@ class Evaluator:
           
 
         self._initialized = True
-
 
 
     def evaluate(self, query, responses, miner_uids=None):
@@ -255,14 +251,5 @@ class Evaluator:
                 ))
         
         return TournamentResult(miner_evaluations=miner_evaluations)
-        
-    def _evaluate_response_with_rubric(self, query, response, criterion):
-        """
-        Evaluate a single response using the rubric criteria.
-        For now, using simplified scoring - will be enhanced in next step.
-        """
-        # Simplified evaluation for now - will use LLM in next step
-        # Returns random score 0-10 for demonstration
-        return random.randint(0, 10)
         
 
