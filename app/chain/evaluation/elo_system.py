@@ -32,43 +32,7 @@ class ELOSystem:
         if uid not in self.ratings:
             self.initialize_miner(uid)
         return self.ratings[uid]
-        
-    def update_ratings(self, group_results: List[Tuple[int, int]]):
-        """
-        Update ELO ratings based on tournament group results.
-        
-        Args:
-            group_results: List of (uid, rank) tuples where rank is 1, 2, 3, 4
-        """
-        # Sort by rank (1st place first)
-        sorted_results = sorted(group_results, key=lambda x: x[1])
-        
- 
-        elo_changes = {
-            1: 36,      # 1st place: +36
-            2: 24,      # 2nd place: +24
-            3: 12,      # 3rd place: +12
-            4: 0        # 4th place: 0
-        }
-        
-        # Apply ELO changes
-        for uid, rank in sorted_results:
-            if uid not in self.ratings:
-                self.initialize_miner(uid)
-            
-            change = elo_changes[rank]
-            self.ratings[uid] += change
-            
-            bt.logging.info(f"Miner {uid}: Rank {rank}, ELO change: {change:+d}, New rating: {self.ratings[uid]}")
-            
-        # Record tournament locally
-        self.tournament_history.append({
-            'epoch': self.epoch_count,
-            'evaluation_round': self.evaluation_round,
-            'group_results': group_results,
-            'elo_changes': {uid: elo_changes[rank] for uid, rank in group_results}
-        })
-        
+                
 
         
     def get_rankings(self) -> List[Tuple[int, int]]:

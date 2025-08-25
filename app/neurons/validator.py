@@ -94,9 +94,7 @@ class Validator(BaseValidatorNeuron):
         # Store previous ELO scores for miners
         self.previous_elo_scores = {}
         
-        # Track validation cycles for score refresh
-        self.validation_cycle_count = 0
-        self.refresh_scores_after_cycles = 10
+        # ELO scores will be refreshed every 10 epochs
         
 
         
@@ -158,13 +156,14 @@ class Validator(BaseValidatorNeuron):
     
     def get_previous_elo_scores(self, miner_uids: List[int]) -> Dict[int, float]:
         """
-        Get previous ELO scores for miners from the database.
+        Get previous ELO scores for miners from this validator's final scores.
+        Accumulates scores across epochs without normalization.
         
         Args:
             miner_uids: List of miner UIDs to get scores for
             
         Returns:
-            Dict mapping miner UID to previous ELO score
+            Dict mapping miner UID to accumulated ELO score
         """
         if not self.elo_sync_manager:
             bt.logging.debug("No ELO sync manager available")
@@ -173,20 +172,38 @@ class Validator(BaseValidatorNeuron):
         try:
             previous_scores = {}
             
+            # Get validator hotkey
+            if not hasattr(self, 'validator_uid') or self.validator_uid is None:
+                bt.logging.debug("Validator UID not set yet")
+                return {}
+                
+            if self.validator_uid >= len(self.metagraph.hotkeys):
+                bt.logging.warning("Validator UID out of bounds")
+                return {}
+                
+            validator_hotkey = self.metagraph.hotkeys[self.validator_uid]
+            
             for uid in miner_uids:
-                # Try to get the most recent ELO score for this miner
-                result = self.supabase.table('elo_submissions').select('elo_rating').eq('miner_uid', uid).order('timestamp', desc=True).limit(1).execute()
+                # Get miner hotkey from metagraph
+                if uid >= len(self.metagraph.hotkeys):
+                    bt.logging.warning(f"Miner UID {uid} out of bounds")
+                    previous_scores[uid] = 1000  # Default ELO rating
+                    continue
+                
+                miner_hotkey = self.metagraph.hotkeys[uid]
+                
+                # Get the most recent final ELO score for this miner from this validator
+                result = self.supabase.table('validator_final_scores').select('final_elo').eq('validator_hotkey', validator_hotkey).eq('miner_hotkey', miner_hotkey).order('epoch', desc=True).limit(1).execute()
                 
                 if result.data:
-                    # Convert ELO rating back to normalized score (0-1)
-                    elo_rating = result.data[0]['elo_rating']
-                    normalized_score = elo_rating / 1000.0  # Convert back from ELO scale
-                    previous_scores[uid] = normalized_score
-                    bt.logging.debug(f"Miner {uid}: Previous ELO score {elo_rating} -> normalized {normalized_score:.4f}")
+                    # Get the final ELO score (not normalized)
+                    final_elo = result.data[0]['final_elo']
+                    previous_scores[uid] = final_elo
+                    bt.logging.debug(f"Miner {uid} ({miner_hotkey}): Previous ELO score {final_elo}")
                 else:
                     # No previous score, use default
-                    previous_scores[uid] = 0.5  # Default middle score
-                    bt.logging.debug(f"Miner {uid}: No previous score, using default 0.5")
+                    previous_scores[uid] = 1000  # Default ELO rating
+                    bt.logging.debug(f"Miner {uid} ({miner_hotkey}): No previous score, using default 1000")
             
             bt.logging.info(f"Retrieved previous ELO scores for {len(previous_scores)} miners")
             return previous_scores
@@ -215,14 +232,13 @@ class Validator(BaseValidatorNeuron):
     
     def refresh_elo_scores(self):
         """
-        Refresh ELO scores after 10 validation cycles.
-        This resets the previous scores to force fresh evaluation.
+        Refresh ELO scores every 10 epochs.
+        This resets the previous scores to default (1000) to force fresh evaluation.
         """
         try:
-            bt.logging.info("🔄 Refreshing ELO scores after 10 validation cycles")
+            bt.logging.info("🔄 Refreshing ELO scores every 10 epochs")
             self.previous_elo_scores.clear()
-            self.validation_cycle_count = 0
-            bt.logging.info("✅ ELO scores refreshed, starting fresh evaluation")
+            bt.logging.info("✅ ELO scores refreshed to default (1000), starting fresh evaluation")
             
         except Exception as e:
             bt.logging.error(f"Error refreshing ELO scores: {e}")
@@ -232,7 +248,7 @@ class Validator(BaseValidatorNeuron):
     def submit_elo_ratings(self, epoch: int, miner_uids: List[int], rewards: List[float]):
         """
         Submit ELO ratings for evaluated miners.
-        No thresholds, no waiting - just submit results.
+        Accumulates new scores with previous scores.
         
         Args:
             epoch: Current epoch number
@@ -248,15 +264,35 @@ class Validator(BaseValidatorNeuron):
             return
             
         try:
-            # Submit ELO ratings for evaluated miners
+            # Get previous ELO scores for accumulation
+            previous_scores = self.get_previous_elo_scores(miner_uids)
+            
+            # Submit accumulated ELO ratings for evaluated miners
             for uid, reward in zip(miner_uids, rewards):
                 if reward > 0:  # Only submit positive ratings
-                    elo_rating = int(reward * 1000)  # Convert reward to ELO scale
-                    success = self.elo_sync_manager.submit_elo_rating(epoch, uid, elo_rating, self.validator_uid)
-                    if success:
-                        bt.logging.debug(f"✅ ELO rating {elo_rating} submitted for miner {uid}")
+                    # Get previous score or use default
+                    previous_elo = previous_scores.get(uid, 1000)
+                    
+                    # Add ELO bonus to previous score (evaluator now gives ELO bonuses directly)
+                    elo_bonus = int(reward)  # reward is now the ELO bonus (36, 30, 24, etc.)
+                    accumulated_elo = previous_elo + elo_bonus
+                    
+                    # Get miner hotkey from metagraph
+                    if uid >= len(self.metagraph.hotkeys):
+                        bt.logging.warning(f"Miner UID {uid} out of bounds, skipping")
+                        continue
+                    
+                    miner_hotkey = self.metagraph.hotkeys[uid]
+                    validator_hotkey = self.metagraph.hotkeys[self.validator_uid] if self.validator_uid < len(self.metagraph.hotkeys) else None
+                    
+                    if validator_hotkey:
+                        success = self.elo_sync_manager.submit_elo_rating(self.current_epoch, miner_hotkey, accumulated_elo, validator_hotkey)
+                        if success:
+                            bt.logging.debug(f"✅ ELO rating {accumulated_elo} (previous: {previous_elo} + bonus: +{elo_bonus}) submitted for miner {uid} ({miner_hotkey})")
+                        else:
+                            bt.logging.warning(f"⚠️ Failed to submit ELO rating for miner {uid} ({miner_hotkey})")
                     else:
-                        bt.logging.warning(f"⚠️ Failed to submit ELO rating for miner {uid}")
+                        bt.logging.error(f"❌ Validator hotkey not available for UID {self.validator_uid}")
                         
         except Exception as e:
             bt.logging.error(f"Error submitting ELO ratings: {e}")
@@ -475,6 +511,31 @@ class Validator(BaseValidatorNeuron):
                             
                             bt.logging.info(f"Miner {uid}: Group {group_idx + 1} average score: {avg_group_score:.4f} (from {len(round_scores)} rounds)")
                         
+                        # Apply ranking-based ELO bonuses for this group
+                        if len(group_scores) >= 2:  # Need at least 2 miners for ranking
+                            # Sort miners by their average score in this group (highest first)
+                            group_rankings = sorted(
+                                [(uid, sum(scores) / len(scores)) for uid, scores in group_scores.items()],
+                                key=lambda x: x[1],
+                                reverse=True
+                            )
+                            
+                            # ELO bonuses for 6 miners: 1st=36, 2nd=30, 3rd=24, 4th=18, 5th=12, 6th=6
+                            elo_bonuses = [36, 30, 24, 18, 12, 6]
+                            
+                            # Assign ELO bonuses based on rank
+                            for rank, (uid, score) in enumerate(group_rankings):
+                                if rank < len(elo_bonuses):
+                                    elo_bonus = elo_bonuses[rank]
+                                    bt.logging.info(f"Group {group_idx + 1}: Miner {uid} ranked {rank + 1} (score: {score:.2f}) -> ELO bonus: +{elo_bonus}")
+                                    
+                                    # Store ELO bonus for this miner in this group
+                                    if uid not in miner_scores:
+                                        miner_scores[uid] = []
+                                    miner_scores[uid].append(elo_bonus)  # Store ELO bonus instead of raw score
+                                else:
+                                    bt.logging.warning(f"Group {group_idx + 1}: Miner {uid} ranked {rank + 1} but no ELO bonus available")
+                        
                         total_miners_evaluated += len(working_responses)
                         
                     except Exception as e:
@@ -484,39 +545,61 @@ class Validator(BaseValidatorNeuron):
                 else:
                     bt.logging.warning(f"Group {group_idx + 1}: No working miners for evaluation")
             
-            # Calculate average scores for each miner
+            # Calculate total ELO bonuses for each miner
             bt.logging.info(f"Tournament evaluation summary: {total_miners_evaluated} miners evaluated across {len(all_groups)} groups")
-            bt.logging.info(f"Collected scores for {len(miner_scores)} unique miners")
+            bt.logging.info(f"Collected ELO bonuses for {len(miner_scores)} unique miners")
             
-            # Calculate average ELO scores and prepare for submission
+            # Calculate total ELO bonuses and prepare for submission
             final_miner_uids = []
-            final_average_scores = []
+            final_total_elo_bonuses = []
             
-            for uid, scores in miner_scores.items():
-                if scores:  # Only include miners with valid scores
-                    avg_score = sum(scores) / len(scores)
+            for uid, elo_bonuses in miner_scores.items():
+                if elo_bonuses:  # Only include miners with valid ELO bonuses
+                    total_elo_bonus = sum(elo_bonuses)
                     final_miner_uids.append(uid)
-                    final_average_scores.append(avg_score)
-                    bt.logging.info(f"Miner {uid}: {len(scores)} scores, average: {avg_score:.4f}")
+                    final_total_elo_bonuses.append(total_elo_bonus)
+                    bt.logging.info(f"Miner {uid}: {len(elo_bonuses)} ELO bonuses, total: +{total_elo_bonus}")
             
-            # Submit average ELO ratings to Supabase
-            if self.elo_sync_manager and final_miner_uids and final_average_scores:
-                bt.logging.info(f"Submitting average ELO ratings for {len(final_miner_uids)} miners")
-                self.submit_elo_ratings(self.current_epoch, final_miner_uids, final_average_scores)
+            # Submit total ELO bonuses to Supabase
+            if self.elo_sync_manager and final_miner_uids and final_total_elo_bonuses:
+                bt.logging.info(f"Submitting total ELO bonuses for {len(final_miner_uids)} miners")
+                self.submit_elo_ratings(self.current_epoch, final_miner_uids, final_total_elo_bonuses)
                 
-                # Store current scores for next cycle
-                self.store_current_elo_scores(final_miner_uids, final_average_scores)
+                # Store current ELO bonuses for next cycle
+                self.store_current_elo_scores(final_miner_uids, final_total_elo_bonuses)
                 
-                # Check if epoch is finalized and consensus is available
-                consensus = self.elo_sync_manager.get_epoch_consensus(self.current_epoch)
+                # Calculate final ELO scores and weights for this validator
+                final_scores = {}
+                for uid, total_elo_bonus in zip(final_miner_uids, final_total_elo_bonuses):
+                    # Get previous ELO score or use default
+                    previous_elo = previous_scores.get(uid, 1000)
+                    final_elo = previous_elo + total_elo_bonus
+                    
+                    # Calculate weight (normalize to 0-1)
+                    final_weight = min(1.0, final_elo / 1000.0)
+                    
+                    # Get miner hotkey
+                    if uid < len(self.metagraph.hotkeys):
+                        miner_hotkey = self.metagraph.hotkeys[uid]
+                        final_scores[miner_hotkey] = {
+                            'final_elo': final_elo,
+                            'final_weight': final_weight
+                        }
                 
-                if consensus:
-                    # Epoch is finalized, use consensus to set weights
-                    bt.logging.info(f"✅ Epoch {self.current_epoch} consensus available, setting weights")
-                    self.set_weights_from_consensus(consensus)
-                else:
-                    # Epoch not finalized yet, weights will be set during next sync
-                    bt.logging.info(f"⏳ Epoch {self.current_epoch} not finalized yet, waiting for consensus from all validators")
+                # Store final scores for this validator
+                if final_scores and self.elo_sync_manager:
+                    validator_hotkey = self.metagraph.hotkeys[self.validator_uid] if self.validator_uid < len(self.metagraph.hotkeys) else None
+                    if validator_hotkey:
+                        self.elo_sync_manager.store_validator_final_scores(self.current_epoch, validator_hotkey, final_scores)
+                        
+                        # Push weights to Bittensor immediately
+                        success = self.elo_sync_manager.push_weights_to_bittensor(self.current_epoch, validator_hotkey)
+                        if success:
+                            bt.logging.info(f"✅ Epoch {self.current_epoch} weights pushed to Bittensor by validator {validator_hotkey}")
+                        else:
+                            bt.logging.warning(f"⚠️ Failed to push epoch {self.current_epoch} weights to Bittensor")
+                    else:
+                        bt.logging.error(f"❌ Validator hotkey not available for UID {self.validator_uid}")
             else:
                 bt.logging.warning("No ELO data collected - no miners were successfully evaluated")
             
@@ -524,38 +607,12 @@ class Validator(BaseValidatorNeuron):
             self.current_epoch += 1
             self.evaluation_round = 0
             
-            # Increment validation cycle count
-            self.validation_cycle_count += 1
-            
-            # Check if we should refresh scores
-            if self.validation_cycle_count >= self.refresh_scores_after_cycles:
+            # Check if we should refresh scores (every 10 epochs)
+            if self.current_epoch % 10 == 0:
                 self.refresh_elo_scores()
             
             bt.logging.info(f"Tournament evaluation complete. Epoch {self.current_epoch - 1} finished. Total miners evaluated: {total_miners_evaluated}")
-            bt.logging.info(f"Validation cycle {self.validation_cycle_count}/{self.refresh_scores_after_cycles}")
-            
-            # Finalize epoch and push to Bittensor
-            if self.elo_sync_manager:
-                completed_epoch = self.current_epoch - 1
-                bt.logging.info(f"🎯 Finalizing epoch {completed_epoch}")
-                
-                # Finalize epoch and get consensus
-                consensus_ratings = self.elo_sync_manager.finalize_epoch(completed_epoch)
-                
-                if consensus_ratings:
-                    bt.logging.info(f"✅ Epoch {completed_epoch} finalized with {len(consensus_ratings)} miners")
-                    
-                    # Push consensus to Bittensor
-                    success = self.elo_sync_manager.push_to_bittensor(completed_epoch)
-                    if success:
-                        bt.logging.info(f"🚀 Epoch {completed_epoch} consensus pushed to Bittensor")
-                    else:
-                        bt.logging.warning(f"⚠️ Failed to push epoch {completed_epoch} to Bittensor")
-                else:
-                    bt.logging.warning(f"⚠️ No consensus available for epoch {completed_epoch}")
-                    bt.logging.info("⏳ Waiting for consensus to become available")
-            else:
-                bt.logging.info("🔄 No ELO sync manager available")
+            bt.logging.info(f"Current epoch: {self.current_epoch}")
             
             # Simple epoch management - wait for next cycle
             bt.logging.info(f"🔄 Waiting for next validation cycle...")
@@ -787,9 +844,11 @@ class Validator(BaseValidatorNeuron):
                 self.validator_uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
                 bt.logging.info(f"Validator UID set to: {self.validator_uid}")
                 
-                # Set UID in ELO sync manager if available
+                # Set hotkey in ELO sync manager if available
                 if self.elo_sync_manager:
-                    self.elo_sync_manager.set_validator_uid(self.validator_uid)
+                    validator_hotkey = self.wallet.hotkey.ss58_address
+                    self.elo_sync_manager.set_validator_hotkey(validator_hotkey)
+                    bt.logging.info(f"Validator hotkey set in ELO sync manager: {validator_hotkey}")
                     
             except ValueError:
                 bt.logging.warning("Validator not found in metagraph")

@@ -1,8 +1,8 @@
 """
-Simple ELO Sync System
-- No thresholds, no waiting
-- Just collect all results and push to Bittensor
-- Super simple but powerful
+Simple ELO Sync System - Independent Validators
+- Each validator stores their own ELO scores
+- Each validator pushes their own weights to Bittensor
+- No consensus, no synchronization delays
 """
 import json
 import time
@@ -13,8 +13,8 @@ from supabase import create_client, Client
 
 class SimpleELOSync:
     """
-    Super simple ELO sync that just collects results and pushes to Bittensor.
-    No thresholds, no waiting - just epoch → evaluate → collect → push.
+    Independent ELO sync - each validator works independently.
+    No consensus, no waiting - just store scores and push weights.
     """
     
     def __init__(self, supabase_url: str, supabase_key: str):
@@ -24,9 +24,9 @@ class SimpleELOSync:
             # Create a test record to verify full database functionality
             test_data = {
                 'epoch': -1,  # Use negative epoch to avoid conflicts
-                'miner_uid': -1,
+                'miner_hotkey': 'test_miner',
                 'elo_rating': 1000,
-                'validator_uid': -1,
+                'validator_hotkey': 'test_validator',
                 'timestamp': time.time()
             }
             
@@ -59,142 +59,123 @@ class SimpleELOSync:
         """Set validator instance for metagraph access"""
         self.validator_instance = validator
     
-    def set_validator_uid(self, validator_uid: int):
-        """Set validator UID for ELO sync operations"""
-        self.validator_uid = validator_uid
-        bt.logging.info(f"✅ Validator UID set to {validator_uid} in ELO sync manager")
+    def set_validator_hotkey(self, validator_hotkey: str):
+        """Set validator hotkey for ELO sync operations"""
+        self.validator_hotkey = validator_hotkey
+        bt.logging.info(f"✅ Validator hotkey set to {validator_hotkey} in ELO sync manager")
     
-    def submit_elo_rating(self, epoch: int, miner_uid: int, rating: int, validator_uid: int = None) -> bool:
+    def submit_elo_rating(self, epoch: int, miner_hotkey: str, rating: int, validator_hotkey: str = None) -> bool:
         """
-        Submit ELO rating - no waiting, no thresholds.
+        Submit ELO rating using hotkeys - no waiting, no thresholds.
         Just store the result.
         """
         try:
-            # Use stored validator UID if none provided
-            if validator_uid is None and hasattr(self, 'validator_uid'):
-                validator_uid = self.validator_uid
-                bt.logging.debug(f"Using stored validator UID: {validator_uid}")
+            # Use stored validator hotkey if none provided
+            if validator_hotkey is None and hasattr(self, 'validator_hotkey'):
+                validator_hotkey = self.validator_hotkey
+                bt.logging.debug(f"Using stored validator hotkey: {validator_hotkey}")
             
-            if validator_uid is None:
-                bt.logging.error("❌ No validator UID available for ELO rating submission")
+            if validator_hotkey is None:
+                bt.logging.error("❌ No validator hotkey available for ELO rating submission")
                 return False
             
             result = self.supabase.table('elo_submissions').upsert({
                 'epoch': epoch,
-                'miner_uid': miner_uid,
+                'miner_hotkey': miner_hotkey,
                 'elo_rating': rating,
-                'validator_uid': validator_uid,
+                'validator_hotkey': validator_hotkey,
                 'timestamp': time.time()
             }).execute()
             
-            bt.logging.debug(f"✅ ELO rating submitted: Epoch {epoch}, Miner {miner_uid}, Rating {rating}, Validator {validator_uid}")
+            bt.logging.debug(f"✅ ELO rating submitted: Epoch {epoch}, Miner {miner_hotkey}, Rating {rating}, Validator {validator_hotkey}")
             return True
             
         except Exception as e:
             bt.logging.error(f"❌ Failed to submit ELO rating: {e}")
             return False
     
-    def finalize_epoch(self, epoch: int) -> Optional[Dict]:
+    def store_validator_final_scores(self, epoch: int, validator_hotkey: str, final_scores: Dict[str, Dict]) -> bool:
         """
-        Finalize epoch when it ends - collect ALL results.
-        No thresholds, no waiting - just get everything.
-        """
-        try:
-            # Get ALL submissions for this epoch
-            result = self.supabase.table('elo_submissions').select('*').eq('epoch', epoch).execute()
-            
-            if not result.data:
-                bt.logging.warning(f"⚠️ No submissions found for epoch {epoch}")
-                return None
-            
-            # Group by miner and calculate consensus
-            consensus = {}
-            miner_ratings = {}
-            
-            # Group ratings by miner
-            for submission in result.data:
-                miner_uid = submission['miner_uid']
-                rating = submission['elo_rating']
-                
-                if miner_uid not in miner_ratings:
-                    miner_ratings[miner_uid] = []
-                miner_ratings[miner_uid].append(rating)
-            
-            # Calculate consensus for each miner
-            for miner_uid, ratings in miner_ratings.items():
-                if not ratings:
-                    continue
-                
-                # Simple average - no stake weighting
-                avg_elo = sum(ratings) / len(ratings)
-                weight = min(1.0, avg_elo / 1000.0)  # Normalize to 0-1
-                
-                consensus[miner_uid] = {
-                    'final_elo': int(avg_elo),
-                    'final_weight': weight,
-                    'validator_count': len(ratings),
-                    'ratings': ratings
-                }
-            
-            # Store consensus
-            consensus_result = self.supabase.table('epoch_consensus').upsert({
-                'epoch': epoch,
-                'consensus_data': consensus,
-                'finalized': True,
-                'finalized_at': time.time(),
-                'pushed_to_bittensor': False
-            }).execute()
-            
-            bt.logging.info(f"🎯 Epoch {epoch} finalized: {len(consensus)} miners, {len(result.data)} total ratings")
-            return consensus
-            
-        except Exception as e:
-            bt.logging.error(f"❌ Failed to finalize epoch {epoch}: {e}")
-            return None
-    
-    def push_to_bittensor(self, epoch: int) -> bool:
-        """
-        Push consensus weights to Bittensor.
-        Called before next epoch starts.
+        Store final ELO scores for a validator in an epoch.
+        
+        Args:
+            epoch: Epoch number
+            validator_hotkey: Validator's hotkey
+            final_scores: Dict mapping miner_hotkey to {final_elo, final_weight}
         """
         try:
-            # Get consensus for this epoch
-            result = self.supabase.table('epoch_consensus').select('*').eq('epoch', epoch).eq('finalized', True).execute()
+            # Prepare data for storage
+            scores_data = []
+            for miner_hotkey, score_data in final_scores.items():
+                scores_data.append({
+                    'epoch': epoch,
+                    'validator_hotkey': validator_hotkey,
+                    'miner_hotkey': miner_hotkey,
+                    'final_elo': score_data['final_elo'],
+                    'final_weight': score_data['final_weight'],
+                    'timestamp': time.time()
+                })
             
-            if not result.data:
-                bt.logging.warning(f"⚠️ No consensus found for epoch {epoch}")
+            # Store in validator_final_scores table
+            if scores_data:
+                result = self.supabase.table('validator_final_scores').upsert(scores_data).execute()
+                bt.logging.info(f"📊 Stored {len(scores_data)} final scores for validator {validator_hotkey} in epoch {epoch}")
+                
+                # Also store in historical_scores for long-term tracking
+                historical_result = self.supabase.table('historical_scores').upsert(scores_data).execute()
+                bt.logging.info(f"📚 Stored {len(scores_data)} historical scores for epoch {epoch}")
+                
+                return True
+            else:
+                bt.logging.warning(f"⚠️ No final scores to store for validator {validator_hotkey} in epoch {epoch}")
                 return False
+                
+        except Exception as e:
+            bt.logging.error(f"❌ Failed to store final scores for epoch {epoch}: {e}")
+            return False
+    
+    def push_weights_to_bittensor(self, epoch: int, validator_hotkey: str) -> bool:
+        """
+        Push validator's own weights to Bittensor.
+        Each validator pushes their own weights independently.
+        """
+        try:
+            # Get final scores for this validator in this epoch
+            result = self.supabase.table('validator_final_scores').select('*').eq('epoch', epoch).eq('validator_hotkey', validator_hotkey).execute()
             
-            consensus_data = result.data[0]['consensus_data']
+            if not result.data:
+                bt.logging.warning(f"⚠️ No final scores found for validator {validator_hotkey} in epoch {epoch}")
+                return False
             
             if not self.validator_instance:
                 bt.logging.error("❌ No validator instance set")
                 return False
             
-            # Create weight tensor
+            # Create weight tensor from this validator's scores
             metagraph = self.validator_instance.metagraph
             weights = {}
             
-            for miner_uid, data in consensus_data.items():
-                uid = int(miner_uid)
-                if uid < len(metagraph.hotkeys):
-                    weights[uid] = data['final_weight']
-                    bt.logging.debug(f"⚖️ Miner {uid}: Weight {data['final_weight']:.4f}")
+            for score_data in result.data:
+                miner_hotkey = score_data['miner_hotkey']
+                final_weight = score_data['final_weight']
+                
+                # Find UID for this hotkey in metagraph
+                uid = None
+                for i, hotkey in enumerate(metagraph.hotkeys):
+                    if hotkey == miner_hotkey:
+                        uid = i
+                        break
+                
+                if uid is not None and uid < len(metagraph.hotkeys):
+                    weights[uid] = final_weight
+                    bt.logging.debug(f"⚖️ Miner {miner_hotkey} (UID {uid}): Weight {final_weight:.4f}")
+                else:
+                    bt.logging.warning(f"⚠️ Miner hotkey {miner_hotkey} not found in metagraph")
             
             # Set weights on Bittensor
             if weights:
                 self.validator_instance.set_weights_from_consensus(weights)
-                
-                # Mark as pushed
-                self.supabase.table('epoch_consensus').update({
-                    'pushed_to_bittensor': True
-                }).eq('epoch', epoch).execute()
-                
-                bt.logging.info(f"🚀 Epoch {epoch} weights pushed to Bittensor: {len(weights)} miners")
-                
-                # Push average scores to another database
-                self.push_average_scores_to_db(epoch, consensus_data)
-                
+                bt.logging.info(f"🚀 Epoch {epoch} weights pushed to Bittensor by validator {validator_hotkey}: {len(weights)} miners")
                 return True
             else:
                 bt.logging.warning(f"⚠️ No valid weights to push for epoch {epoch}")
@@ -204,97 +185,11 @@ class SimpleELOSync:
             bt.logging.error(f"❌ Failed to push epoch {epoch} to Bittensor: {e}")
             return False
     
-    def push_average_scores_to_db(self, epoch: int, consensus_data: Dict):
-        """
-        Push average ELO scores to another database after Bittensor push.
-        
-        Args:
-            epoch: Epoch number
-            consensus_data: Consensus data with final ELO scores
-        """
-        try:
-            # Create average scores data
-            average_scores = []
-            for miner_uid, data in consensus_data.items():
-                uid = int(miner_uid)
-                average_scores.append({
-                    'epoch': epoch,
-                    'miner_uid': uid,
-                    'final_elo': data['final_elo'],
-                    'final_weight': data['final_weight'],
-                    'validator_count': data['validator_count'],
-                    'timestamp': time.time()
-                })
-            
-            # Insert into average_scores table (create if doesn't exist)
-            if average_scores:
-                result = self.supabase.table('average_scores').upsert(average_scores).execute()
-                bt.logging.info(f"📊 Pushed {len(average_scores)} average scores to database for epoch {epoch}")
-            else:
-                bt.logging.warning(f"⚠️ No average scores to push for epoch {epoch}")
-                
-        except Exception as e:
-            bt.logging.error(f"❌ Failed to push average scores to database: {e}")
-    
-    def get_epoch_consensus(self, epoch: int) -> Optional[Dict]:
-        """
-        Get consensus ELO data for a specific epoch.
-        
-        Args:
-            epoch: Epoch number to retrieve consensus for
-            
-        Returns:
-            Consensus data dict or None if not available
-        """
-        try:
-            # Get consensus for this epoch
-            result = self.supabase.table('epoch_consensus').select('*').eq('epoch', epoch).eq('finalized', True).execute()
-            
-            if not result.data:
-                bt.logging.debug(f"No finalized consensus found for epoch {epoch}")
-                return None
-            
-            consensus_data = result.data[0]['consensus_data']
-            bt.logging.info(f"✅ Retrieved consensus for epoch {epoch}: {len(consensus_data)} miners")
-            return consensus_data
-            
-        except Exception as e:
-            bt.logging.error(f"❌ Failed to get consensus for epoch {epoch}: {e}")
-            return None
-    
-    def get_epoch_status(self, epoch: int) -> Dict:
-        """Get simple status for an epoch"""
-        try:
-            # Get submission count
-            submissions = self.supabase.table('elo_submissions').select('validator_uid').eq('epoch', epoch).execute()
-            unique_validators = len(set(sub['validator_uid'] for sub in submissions.data)) if submissions.data else 0
-            
-            # Get consensus status
-            consensus = self.supabase.table('epoch_consensus').select('*').eq('epoch', epoch).execute()
-            
-            status = {
-                'epoch': epoch,
-                'validators_participated': unique_validators,
-                'total_submissions': len(submissions.data) if submissions.data else 0,
-                'finalized': False,
-                'pushed_to_bittensor': False
-            }
-            
-            if consensus.data:
-                status['finalized'] = consensus.data[0]['finalized']
-                status['pushed_to_bittensor'] = consensus.data[0]['pushed_to_bittensor']
-            
-            return status
-            
-        except Exception as e:
-            bt.logging.error(f"❌ Failed to get epoch {epoch} status: {e}")
-            return {'epoch': epoch, 'error': str(e)}
-    
-    def cleanup_old_epochs(self, keep_last: int = 10):
-        """Keep only recent epochs"""
+    def cleanup_old_epochs(self, keep_last: int = 500):
+        """Keep only recent epochs for historical tracking"""
         try:
             # Get all epochs
-            result = self.supabase.table('epoch_consensus').select('epoch').order('epoch', desc=True).execute()
+            result = self.supabase.table('historical_scores').select('epoch').order('epoch', desc=True).execute()
             
             if not result.data:
                 return
@@ -309,8 +204,11 @@ class SimpleELOSync:
             # Delete old submissions
             self.supabase.table('elo_submissions').delete().lt('epoch', cutoff_epoch).execute()
             
-            # Delete old consensus
-            self.supabase.table('epoch_consensus').delete().lt('epoch', cutoff_epoch).execute()
+            # Delete old final scores
+            self.supabase.table('validator_final_scores').delete().lt('epoch', cutoff_epoch).execute()
+            
+            # Delete old historical scores
+            self.supabase.table('historical_scores').delete().lt('epoch', cutoff_epoch).execute()
             
             bt.logging.info(f"🗑️ Cleaned up epochs older than {cutoff_epoch}")
             

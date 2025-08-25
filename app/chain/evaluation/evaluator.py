@@ -146,13 +146,10 @@ class Evaluator:
         # Log tournament results (no ELO updates needed)
         bt.logging.info(f"Tournament group completed: {len(group_results)} miners evaluated")
         
-        # Normalize scores to 0-1 range
-        normalized_scores = self._normalize_scores(scores)
-        
-        # Tournament results logged locally - no need for complex Supabase logging
+        # Return raw scores for proper ELO ranking (not normalized)
         bt.logging.debug(f"Tournament evaluation completed for {len(miner_uids)} miners")
         
-        return normalized_scores, None  # No reference result in tournament mode
+        return scores, None  # Return raw scores, not normalized
         
     def _select_tournament_criteria(self, num_criteria=2):
         """
@@ -268,18 +265,4 @@ class Evaluator:
         # Returns random score 0-10 for demonstration
         return random.randint(0, 10)
         
-    def _normalize_scores(self, scores):
-        """Normalize scores to 0-1 range."""
-        if scores.numel() > 0 and scores.max() > 1e-5:
-            scores_min = scores.min()
-            scores_max = scores.max()
-            
-            if scores_max > scores_min:
-                normalized_scores = (scores - scores_min) / (scores_max - scores_min)
-            else:
-                normalized_scores = torch.ones_like(scores) * 0.5
-        else:
-            normalized_scores = torch.zeros_like(scores)
-            
-        return normalized_scores
 
