@@ -27,6 +27,7 @@ class EloManager:
                 'miner_hotkey': 'test_miner',
                 'elo_rating': 1000,
                 'validator_hotkey': 'test_validator',
+                'miner_response': 'Test miner response content',
                 'timestamp': time.time()
             }
             
@@ -61,7 +62,7 @@ class EloManager:
         self.validator_hotkey = validator_hotkey
         bt.logging.info(f"✅ Validator hotkey set to {validator_hotkey} in ELO sync manager")
     
-    def submit_elo_rating(self, epoch: int, miner_hotkey: str, rating: int, validator_hotkey: str = None) -> bool:
+    def submit_elo_rating(self, epoch: int, miner_hotkey: str, rating: int, validator_hotkey: str = None, miner_response: str = None) -> bool:
         try:
             # Use stored validator hotkey if none provided
             if validator_hotkey is None and hasattr(self, 'validator_hotkey'):
@@ -77,10 +78,11 @@ class EloManager:
                 'miner_hotkey': miner_hotkey,
                 'elo_rating': rating,
                 'validator_hotkey': validator_hotkey,
+                'miner_response': miner_response,
                 'timestamp': time.time()
             }).execute()
             
-            bt.logging.debug(f"✅ ELO rating submitted: Epoch {epoch}, Miner {miner_hotkey}, Rating {rating}, Validator {validator_hotkey}")
+            bt.logging.debug(f"✅ ELO rating submitted: Epoch {epoch}, Miner {miner_hotkey}, Rating {rating}, Validator {validator_hotkey}, Response stored: {'Yes' if miner_response else 'No'}")
             return True
             
         except Exception as e:

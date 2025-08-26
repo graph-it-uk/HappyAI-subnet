@@ -216,7 +216,7 @@ class Validator(BaseValidatorNeuron):
     
 
     
-    def submit_elo_ratings(self, epoch: int, miner_uids: List[int], rewards: List[float], previous_scores: Dict[int, float] = None):
+    def submit_elo_ratings(self, epoch: int, miner_uids: List[int], rewards: List[float], previous_scores: Dict[int, float] = None, miner_responses: Dict[int, str] = None):
         """
         Submit ELO ratings for evaluated miners.
         Accumulates new scores with previous scores.
@@ -226,6 +226,7 @@ class Validator(BaseValidatorNeuron):
             miner_uids: List of miner UIDs evaluated
             rewards: List of reward scores for each miner
             previous_scores: Dict of previous ELO scores (optional, will fetch if not provided)
+            miner_responses: Dict mapping miner UID to their response content (optional)
         """
         if not self.validator_uid:
             bt.logging.warning("Validator UID not set, cannot submit ratings")
@@ -254,10 +255,13 @@ class Validator(BaseValidatorNeuron):
                     miner_hotkey = self.metagraph.hotkeys[uid]
                     validator_hotkey = self.metagraph.hotkeys[self.validator_uid] if self.validator_uid < len(self.metagraph.hotkeys) else None
                     
+                    # Get miner response if available
+                    miner_response = miner_responses.get(uid) if miner_responses else None
+                    
                     if validator_hotkey:
-                        success = self.elo_manager.submit_elo_rating(self.current_epoch, miner_hotkey, accumulated_elo, validator_hotkey)
+                        success = self.elo_manager.submit_elo_rating(self.current_epoch, miner_hotkey, accumulated_elo, validator_hotkey, miner_response)
                         if success:
-                            bt.logging.debug(f"✅ ELO rating {accumulated_elo} (previous: {previous_elo} + bonus: +{elo_bonus}) submitted for miner {uid} ({miner_hotkey})")
+                            bt.logging.debug(f"✅ ELO rating {accumulated_elo} (previous: {previous_elo} + bonus: +{elo_bonus}) submitted for miner {uid} ({miner_hotkey}), Response stored: {'Yes' if miner_response else 'No'}")
                         else:
                             bt.logging.warning(f"⚠️ Failed to submit ELO rating for miner {uid} ({miner_hotkey})")
                     else:
@@ -478,7 +482,7 @@ class Validator(BaseValidatorNeuron):
             # Submit total ELO bonuses to Supabase
             if final_miner_uids and final_total_elo_bonuses:
                 bt.logging.info(f"Submitting total ELO bonuses for {len(final_miner_uids)} miners")
-                self.submit_elo_ratings(self.current_epoch, final_miner_uids, final_total_elo_bonuses, previous_scores)
+                self.submit_elo_ratings(self.current_epoch, final_miner_uids, final_total_elo_bonuses, previous_scores, miner_response_map)
                 
                 # Store current ELO bonuses for next cycle
                 self.store_current_elo_scores(final_miner_uids, final_total_elo_bonuses)
