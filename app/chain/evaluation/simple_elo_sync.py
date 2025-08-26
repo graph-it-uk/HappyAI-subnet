@@ -62,10 +62,6 @@ class EloManager:
         bt.logging.info(f"✅ Validator hotkey set to {validator_hotkey} in ELO sync manager")
     
     def submit_elo_rating(self, epoch: int, miner_hotkey: str, rating: int, validator_hotkey: str = None) -> bool:
-        """
-        Submit ELO rating using hotkeys - no waiting, no thresholds.
-        Just store the result.
-        """
         try:
             # Use stored validator hotkey if none provided
             if validator_hotkey is None and hasattr(self, 'validator_hotkey'):
@@ -91,45 +87,7 @@ class EloManager:
             bt.logging.error(f"❌ Failed to submit ELO rating: {e}")
             return False
     
-    def store_validator_final_scores(self, epoch: int, validator_hotkey: str, final_scores: Dict[str, Dict]) -> bool:
-        """
-        Store final ELO scores for a validator in an epoch.
-        
-        Args:
-            epoch: Epoch number
-            validator_hotkey: Validator's hotkey
-            final_scores: Dict mapping miner_hotkey to {final_elo, final_weight}
-        """
-        try:
-            # Prepare data for storage
-            scores_data = []
-            for miner_hotkey, score_data in final_scores.items():
-                scores_data.append({
-                    'epoch': epoch,
-                    'validator_hotkey': validator_hotkey,
-                    'miner_hotkey': miner_hotkey,
-                    'final_elo': score_data['final_elo'],
-                    'final_weight': score_data['final_weight'],
-                    'timestamp': time.time()
-                })
-            
-            # Store in validator_final_scores table
-            if scores_data:
-                result = self.supabase.table('validator_final_scores').upsert(scores_data).execute()
-                bt.logging.info(f"📊 Stored {len(scores_data)} final scores for validator {validator_hotkey} in epoch {epoch}")
-                
-                # Also store in historical_scores for long-term tracking
-                historical_result = self.supabase.table('historical_scores').upsert(scores_data).execute()
-                bt.logging.info(f"📚 Stored {len(scores_data)} historical scores for epoch {epoch}")
-                
-                return True
-            else:
-                bt.logging.warning(f"⚠️ No final scores to store for validator {validator_hotkey} in epoch {epoch}")
-                return False
-                
-        except Exception as e:
-            bt.logging.error(f"❌ Failed to store final scores for epoch {epoch}: {e}")
-            return False
+
     
     def push_weights_to_bittensor(self, epoch: int, validator_hotkey: str) -> bool:
         """

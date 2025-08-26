@@ -58,7 +58,7 @@ class Evaluator:
         Tournament-based evaluation using weighted scoring from rubric criteria.
         
         Args:
-            query: The query sent to miners
+            query: The query sent to miners (CompletionSynapse with full context)
             responses: List of miner responses
             miner_uids: List of miner UIDs corresponding to responses (required for ELO)
             
@@ -75,15 +75,27 @@ class Evaluator:
             
         # Store miner UIDs for use in evaluation methods
         self.current_miner_uids = miner_uids
+        
+        # Extract dialog context and current question from query
+        dialog_context = []
+        current_question = ""
+        
+        if hasattr(query, 'messages') and query.messages:
+            dialog_context = [msg.content for msg in query.messages]
+            bt.logging.debug(f"Dialog context: {len(dialog_context)} messages")
+        
+        if hasattr(query, 'user_input') and query.user_input:
+            current_question = query.user_input
+            bt.logging.debug(f"Current question: {current_question}")
             
-        bt.logging.info(f"Tournament evaluation: {len(responses)} miners")
+        bt.logging.info(f"Tournament evaluation: {len(responses)} miners with full context")
         
         # Select 2 random criteria (at least 1 critical, different categories)
         selected_criteria = self._select_tournament_criteria(num_criteria=2)
         bt.logging.info(f"Selected criteria: {[c['id'] for c in selected_criteria]}")
         
-        # Evaluate all criteria together using LLM
-        tournament_result = self._evaluate_criterion_tournament(query, responses, selected_criteria)
+        # Evaluate all criteria together using LLM with full context
+        tournament_result = self._evaluate_criterion_tournament(responses, selected_criteria, dialog_context, current_question)
         
         if not tournament_result or not tournament_result.miner_evaluations:
             bt.logging.error("Failed to get tournament evaluation results")
@@ -121,31 +133,14 @@ class Evaluator:
                     
                     weighted_score = criterion_score * weight
                     weighted_scores.append(weighted_score)
-                    bt.logging.debug(f"Miner {uid}: {criterion_id} = {criterion_score}/10 × {weight} = {weighted_score}")
                 
                 # Calculate final weighted score
                 if weighted_scores:
                     scores[i] = sum(weighted_scores) / len(weighted_scores)
-                    bt.logging.info(f"Miner {uid}: Final weighted score = {scores[i]:.2f}")
         
-        # Convert scores to rankings for ELO update
-        score_rankings = [(score.item(), idx) for idx, score in enumerate(scores)]
-        score_rankings.sort(reverse=True)  # Higher scores first
         
-        # Create (uid, rank) tuples for ELO update
-        group_results = []
-        for rank, (score, response_idx) in enumerate(score_rankings, 1):
-            uid = miner_uids[response_idx]
-            group_results.append((uid, rank))
-            bt.logging.info(f"Miner {uid}: Rank {rank} (score: {score:.2f})")
-        
-        # Log tournament results (no ELO updates needed)
-        bt.logging.info(f"Tournament group completed: {len(group_results)} miners evaluated")
-        
-        # Return raw scores for proper ELO ranking (not normalized)
-        bt.logging.debug(f"Tournament evaluation completed for {len(miner_uids)} miners")
-        
-        return scores, None  # Return raw scores, not normalized
+        # Return only scores since we're using scores for ELO calculation
+        return scores
         
     def _select_tournament_criteria(self, num_criteria=2):
         """
@@ -184,7 +179,7 @@ class Evaluator:
         bt.logging.info(f"Selected criteria: {[c['id'] for c in selected]} from categories: {list(used_categories)}")
         return selected
         
-    def _evaluate_criterion_tournament(self, query, responses, criteria):
+    def _evaluate_criterion_tournament(self, responses, criteria, dialog_context, current_question):
         """
         Evaluate all miner responses for selected criteria using LLM.
         Returns TournamentResult with structured evaluation.
@@ -196,7 +191,9 @@ class Evaluator:
                 'miners': [
                     {'uid': uid, 'response': response} 
                     for uid, response in zip(self.current_miner_uids, responses)
-                ]
+                ],
+                'dialog_context': dialog_context,
+                'current_question': current_question
             }
             
             # Use PromptFacade to get the prompt
@@ -207,14 +204,13 @@ class Evaluator:
             # Call LLM with structured response
             response, completion = (
                 self.instructor_client.messages.create_with_completion(
-                    model="gpt-5-nano",
+                    model="o4-mini-2025-04-16i",
                     max_completion_tokens=2000,
                     messages=messages,
+                    temperature=0,
                     response_model=TournamentResult,
                 )
             )
-
-            print(response)
             
             bt.logging.info(f"LLM evaluation completed: {response}")
             return response
@@ -222,11 +218,17 @@ class Evaluator:
         except Exception as e:
             bt.logging.error(f"Failed to evaluate tournament criteria: {e}")
             # Fallback to mock evaluation if LLM fails
-            return self._fallback_evaluation(responses, criteria)
+            return self._fallback_evaluation(responses, criteria, dialog_context, current_question)
     
-    def _fallback_evaluation(self, responses, criteria):
+    def _fallback_evaluation(self, responses, criteria, dialog_context=None, current_question=None):
         """Fallback evaluation if LLM fails."""
         bt.logging.warning("Using fallback evaluation due to LLM failure")
+        
+        # Log context information for debugging
+        if dialog_context:
+            bt.logging.debug(f"Fallback evaluation with dialog context: {len(dialog_context)} messages")
+        if current_question:
+            bt.logging.debug(f"Fallback evaluation with current question: {current_question}")
         
         # Create mock TournamentResult
         miner_evaluations = []
