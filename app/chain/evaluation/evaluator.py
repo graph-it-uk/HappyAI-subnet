@@ -67,11 +67,11 @@ class Evaluator:
         """
         if miner_uids is None:
             bt.logging.error("Miner UIDs required for tournament evaluation")
-            return torch.zeros(len(responses)), None
+            return torch.zeros(len(responses))
             
         if len(responses) != len(miner_uids):
-            bt.logging.error("Number of responses must match number of miner UIDs")
-            return torch.zeros(len(responses)), None
+            bt.logging.error(f"Responses ({len(responses)}) and UIDs ({len(miner_uids)}) length mismatch")
+            return torch.zeros(len(responses))
             
         # Store miner UIDs for use in evaluation methods
         self.current_miner_uids = miner_uids
@@ -99,7 +99,7 @@ class Evaluator:
         
         if not tournament_result or not tournament_result.miner_evaluations:
             bt.logging.error("Failed to get tournament evaluation results")
-            return torch.zeros(len(responses)), None
+            return torch.zeros(len(responses))
         
         # Extract scores and apply weights
         scores = torch.zeros(len(responses))

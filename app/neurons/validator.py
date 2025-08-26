@@ -337,7 +337,7 @@ class Validator(BaseValidatorNeuron):
             banned_uids = self.get_banned_miner_uids()
             
             # Get all current miner UIDs from metagraph (excluding validators)
-            all_miner_uids = [uid for uid in range(self.metagraph.n) if not self.metagraph.axons[uid].is_forward]
+            all_miner_uids = [uid for uid in range(self.metagraph.n) if not self.metagraph.validator_permit[uid]]
             bt.logging.info(f"Found {len(all_miner_uids)} miners in metagraph")
             
             # Load previous ELO scores for all miners
@@ -529,15 +529,7 @@ class Validator(BaseValidatorNeuron):
             bt.logging.error(f"Error during tournament forward: {e}")
             bt.logging.debug(print_exception(type(e), e, e.__traceback__))
 
-    def get_epoch_status(self):
-        """Get current epoch status"""
-        try:
-            status = self.elo_manager.get_epoch_status(self.current_epoch)
-            bt.logging.info(f"📊 Epoch {self.current_epoch} status: {status}")
-            return status
-        except Exception as e:
-            bt.logging.error(f"Error getting epoch status: {e}")
-            return None
+
 
     def set_weights(self):
         """
@@ -615,38 +607,6 @@ class Validator(BaseValidatorNeuron):
             exit()
 
         # In case of unforeseen errors, the validator will log the error and exit. (restart by pm2)
-        except Exception as err:
-            bt.logging.error("Error during validation", str(err))
-            bt.logging.debug(print_exception(type(err), err, err.__traceback__))
-            self.should_exit = True
-
-    async def run_async(self):
-        # Check that validator is registered on the network.
-        self.sync()
-
-        bt.logging.info(f"Validator starting at block: {self.block}")
-        self.axon.start()
-        bt.logging.info("Axon started and ready to handle OfficialSynapse requests.")
-
-        try:
-            while True:
-                bt.logging.info(f"step({self.step}) block({self.block})")
-                await self.concurrent_forward()
-
-                if self.should_exit:
-                    break
-
-                # Sync metagraph and potentially set weights.
-                self.sync()
-                self.step += 1
-                await asyncio.sleep(self.config.neuron.search_request_interval)
-
-        except asyncio.CancelledError:
-            self.axon.stop()
-            bt.logging.success("Validator cancelled.")
-        except KeyboardInterrupt:
-            self.axon.stop()
-            bt.logging.success("Validator killed by keyboard interrupt.")
         except Exception as err:
             bt.logging.error("Error during validation", str(err))
             bt.logging.debug(print_exception(type(err), err, err.__traceback__))
