@@ -170,10 +170,10 @@ class Validator(BaseValidatorNeuron):
                 result = self.supabase.table('elo_submissions').select('elo_rating').eq('validator_hotkey', validator_hotkey).eq('miner_hotkey', miner_hotkey).order('timestamp', desc=True).limit(1).execute()
                 
                 if result.data:
-                    # Get the final ELO score (not normalized)
-                    final_elo = result.data[0]['elo_rating']
-                    previous_scores[uid] = final_elo
-                    bt.logging.debug(f"Miner {uid} ({miner_hotkey}): Previous ELO score {final_elo}")
+                    # Get the current ELO score (already applied soft forgetting if applicable)
+                    current_elo = result.data[0]['elo_rating']
+                    previous_scores[uid] = current_elo
+                    bt.logging.debug(f"Miner {uid} ({miner_hotkey}): Current ELO score {current_elo}")
                 else:
                     # No previous score, use default
                     previous_scores[uid] = 1000  # Default ELO rating
@@ -201,18 +201,25 @@ class Validator(BaseValidatorNeuron):
         except Exception as e:
             bt.logging.error(f"Error storing current ELO scores: {e}")
     
-    def refresh_elo_scores(self):
+    def apply_soft_forgetting(self):
         """
-        Refresh ELO scores every 10 epochs.
-        This resets the previous scores to default (1000) to force fresh evaluation.
+        Apply soft forgetting to ELO scores every 10 epochs.
+        Reduces ELO ratings towards base rating (1000) by factor gamma.
         """
         try:
-            bt.logging.info("🔄 Refreshing ELO scores every 10 epochs")
-            self.previous_elo_scores.clear()
-            bt.logging.info("✅ ELO scores refreshed to default (1000), starting fresh evaluation")
-            
+            if self.validator_uid and self.validator_uid < len(self.metagraph.hotkeys):
+                validator_hotkey = self.metagraph.hotkeys[self.validator_uid]
+                success = self.elo_manager.apply_soft_forgetting(validator_hotkey, gamma=0.90)
+                if success:
+                    bt.logging.info("✅ Soft forgetting applied to ELO scores")
+                    # Clear local cache to force fresh fetch from Supabase
+                    self.previous_elo_scores.clear()
+                else:
+                    bt.logging.error("❌ Failed to apply soft forgetting")
+            else:
+                bt.logging.warning("Validator UID not available for soft forgetting")
         except Exception as e:
-            bt.logging.error(f"Error refreshing ELO scores: {e}")
+            bt.logging.error(f"Error applying soft forgetting: {e}")
     
 
     
@@ -519,9 +526,9 @@ class Validator(BaseValidatorNeuron):
             self.current_epoch += 1
             self.evaluation_round = 0
             
-            # Check if we should refresh scores (every 10 epochs)
+            # Check if we should apply soft forgetting (every 10 epochs)
             if self.current_epoch % 10 == 0:
-                self.refresh_elo_scores()
+                self.apply_soft_forgetting()
             
             bt.logging.info(f"Current epoch: {self.current_epoch}")
             

@@ -88,6 +88,45 @@ class EloManager:
         except Exception as e:
             bt.logging.error(f"❌ Failed to submit ELO rating: {e}")
             return False
+
+    def apply_soft_forgetting(self, validator_hotkey: str, gamma: float = 0.90) -> bool:
+        """
+        Apply soft forgetting to ELO ratings in Supabase.
+        Reduces ELO ratings towards base rating (1000) by factor gamma.
+        """
+        try:
+            base_rating = 1000
+            
+            # Get all current ELO ratings for this validator
+            result = self.supabase.table('elo_submissions').select('*').eq('validator_hotkey', validator_hotkey).order('timestamp', desc=True).execute()
+            
+            if not result.data:
+                bt.logging.info("No ELO ratings found for soft forgetting")
+                return True
+            
+            # Group by miner_hotkey and get latest rating for each
+            miner_latest_ratings = {}
+            for record in result.data:
+                miner_hotkey = record['miner_hotkey']
+                if miner_hotkey not in miner_latest_ratings:
+                    miner_latest_ratings[miner_hotkey] = record
+            
+            # Apply soft forgetting to each miner's latest rating
+            for miner_hotkey, latest_record in miner_latest_ratings.items():
+                current_elo = latest_record['elo_rating']
+                forgotten_elo = base_rating + gamma * (current_elo - base_rating)
+                
+                # Update the latest record with forgotten ELO
+                self.supabase.table('elo_submissions').update({
+                    'elo_rating': int(forgotten_elo)
+                }).eq('id', latest_record['id']).execute()
+            
+            bt.logging.info(f"Applied soft forgetting with γ={gamma} to {len(miner_latest_ratings)} miners")
+            return True
+            
+        except Exception as e:
+            bt.logging.error(f"Failed to apply soft forgetting: {e}")
+            return False
     
 
     

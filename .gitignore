@@ -7,3 +7,5 @@
 wandb/
 test.ipynb
 simple_elo_schema.sql
+complete_elo_analysis_full.txt
+elo_submissions_20250828_111633.csv
