@@ -7,7 +7,6 @@ import instructor
 
 import torch
 
-from supabase import create_client
 from app.chain.evaluation.models import TournamentResult
 from app.chain.evaluation.prompts.PromptFacade import PromptFacade
 import bittensor as bt
@@ -36,19 +35,7 @@ class Evaluator:
         self.instructor_client = instructor.from_openai(client)
 
         load_dotenv()
-        self.supabase_mode = os.environ.get("SUPABASE_MODE", "False").lower() == "true"
-        if self.supabase_mode:
-          bt.logging.warning(f"SUPABASE_MODE: {self.supabase_mode}")
-          
-          self.supabase = create_client(
-              supabase_url=os.environ.get("SUPABASE_URL"),
-              supabase_key=os.environ.get("SUPABASE_KEY")
-          )
-          self.user_id = os.getpid()
-          
-          # Connection test removed - simplified system
-          bt.logging.debug("Supabase connection established")
-          
+    
 
         self._initialized = True
 

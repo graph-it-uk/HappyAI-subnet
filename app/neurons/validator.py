@@ -5,6 +5,7 @@ from datetime import datetime
 from traceback import print_exception
 from typing import List, Dict
 
+import requests
 import bittensor as bt
 import openai
 from dotenv import load_dotenv
@@ -19,7 +20,6 @@ from app.chain.synthetics.generator import SyntheticsGenerator
 
 from app.chain.utils.uids import tournament_group_miners
 from app.chain.worker import Worker
-from supabase import create_client
 
 
 class Validator(BaseValidatorNeuron):
@@ -38,32 +38,9 @@ class Validator(BaseValidatorNeuron):
         self.synthetics_generator = SyntheticsGenerator(llm_client)
         self.worker = Worker(worker_url=os.environ["WORKER_URL"], worker_port=os.environ["WORKER_PORT"])
         
-        # Initialize Supabase configuration FIRST
-        self.supabase_mode = os.environ.get("SUPABASE_MODE", "False").lower() == "true"
-        if not self.supabase_mode:
-            bt.logging.error("❌ SUPABASE_MODE must be True for validators to function properly")
-            raise RuntimeError("SUPABASE_MODE must be True for validators")
-        
-        # Supabase is required for validators - try to initialize
-        try:
-            supabase_url = os.environ.get("SUPABASE_URL")
-            supabase_key = os.environ.get("SUPABASE_KEY")
-            
-            if not supabase_url or not supabase_key:
-                bt.logging.error("❌ SUPABASE_URL and SUPABASE_KEY must be provided")
-                bt.logging.error("❌ Check your environment variables. Or ask developers to provide them")
-                raise RuntimeError("Missing Supabase credentials")
-            
-            self.supabase = create_client(supabase_url, supabase_key)
-            bt.logging.info("✅ Supabase client initialized successfully")
-            
-        except Exception as e:
-            bt.logging.error(f"❌ Failed to initialize Supabase client: {e}")
-            raise RuntimeError(f"Supabase initialization failed: {e}")
-        
         # Initialize ELO sync manager (required for validator operation)
         try:
-            self.elo_manager = EloManager(supabase_url, supabase_key, self)
+            self.elo_manager = EloManager(self)
         except Exception as e:
             bt.logging.error(f"❌ Failed to initialize ELO manager: {e}")
             raise RuntimeError(f"ELO manager initialization failed: {e}")
@@ -78,14 +55,14 @@ class Validator(BaseValidatorNeuron):
         self.num_evaluation_rounds = 3  
         self.evaluation_round = 0
         
-        # Store previous ELO scores for miners
-        self.previous_elo_scores = {}
         
         self.banned_coldkeys = set()
         self.load_banned_miners()
         
         # Set validator UID for ELO sync (will be updated in sync)
         self.validator_uid = None
+
+
 
 
     def load_banned_miners(self):
@@ -166,19 +143,28 @@ class Validator(BaseValidatorNeuron):
                 
                 miner_hotkey = self.metagraph.hotkeys[uid]
                 
-                # Get the most recent ELO score for this miner from this validator
-                result = self.supabase.table('elo_submissions').select('elo_rating').eq('validator_hotkey', validator_hotkey).eq('miner_hotkey', miner_hotkey).order('timestamp', desc=True).limit(1).execute()
-                
-                if result.data:
-                    # Get the current ELO score (already applied soft forgetting if applicable)
-                    current_elo = result.data[0]['elo_rating']
-                    previous_scores[uid] = current_elo
-                    bt.logging.debug(f"Miner {uid} ({miner_hotkey}): Current ELO score {current_elo}")
+                response = requests.get(
+                    f"{self.api_base}/get-miner-elo",
+                    params={
+                        "validator_hotkey": validator_hotkey,
+                        "miner_hotkey": miner_hotkey
+                    },
+                    timeout=10
+                )
+
+                if response.status_code == 200:
+                    result = response.json()
+                    if result['found']:
+                        current_elo = result['elo_rating']
+                        previous_scores[uid] = current_elo
+                        bt.logging.debug(f"Miner {uid} ({miner_hotkey}): Current ELO score {current_elo}")
+                    else:
+                        previous_scores[uid] = 1000
+                        bt.logging.debug(f"Miner {uid} ({miner_hotkey}): No previous score, using default 1000")
                 else:
-                    # No previous score, use default
-                    previous_scores[uid] = 1000  # Default ELO rating
-                    bt.logging.debug(f"Miner {uid} ({miner_hotkey}): No previous score, using default 1000")
-            
+                    bt.logging.error(f"API error {response.status_code}: {response.text}")
+                    previous_scores[uid] = 1000
+                            
             bt.logging.info(f"Retrieved previous ELO scores for {len(previous_scores)} miners")
             return previous_scores
             
@@ -186,43 +172,9 @@ class Validator(BaseValidatorNeuron):
             bt.logging.error(f"Error getting previous ELO scores: {e}")
             return {}
     
-    def store_current_elo_scores(self, miner_uids: List[int], scores: List[float]):
-        """
-        Store current ELO scores for the next validation cycle.
-        
-        Args:
-            miner_uids: List of miner UIDs
-            scores: List of corresponding scores
-        """
-        try:
-            for uid, score in zip(miner_uids, scores):
-                self.previous_elo_scores[uid] = score
-            
-        except Exception as e:
-            bt.logging.error(f"Error storing current ELO scores: {e}")
     
-    def apply_soft_forgetting(self):
-        """
-        Apply soft forgetting to ELO scores every 10 epochs.
-        Reduces ELO ratings towards base rating (1000) by factor gamma.
-        """
-        try:
-            if self.validator_uid and self.validator_uid < len(self.metagraph.hotkeys):
-                validator_hotkey = self.metagraph.hotkeys[self.validator_uid]
-                success = self.elo_manager.apply_soft_forgetting(validator_hotkey, gamma=0.90)
-                if success:
-                    bt.logging.info("✅ Soft forgetting applied to ELO scores")
-                    # Clear local cache to force fresh fetch from Supabase
-                    self.previous_elo_scores.clear()
-                else:
-                    bt.logging.error("❌ Failed to apply soft forgetting")
-            else:
-                bt.logging.warning("Validator UID not available for soft forgetting")
-        except Exception as e:
-            bt.logging.error(f"Error applying soft forgetting: {e}")
     
 
-    
     def submit_elo_ratings(self, epoch: int, miner_uids: List[int], rewards: List[float], previous_scores: Dict[int, float] = None, miner_responses: Dict[int, str] = None):
         """
         Submit ELO ratings for evaluated miners.
@@ -463,7 +415,6 @@ class Validator(BaseValidatorNeuron):
                 
                 bt.logging.info(f"🔄 Completed evaluation round {round_num + 1}/{self.num_evaluation_rounds}")
             
-            
 
             
             # Calculate ELO bonuses based on final rubric scores, not tournament rankings
@@ -486,17 +437,31 @@ class Validator(BaseValidatorNeuron):
                 else:
                     bt.logging.warning(f"Miner {uid}: No scores available, skipping ELO calculation")
             
-            # Submit total ELO bonuses to Supabase
             if final_miner_uids and final_total_elo_bonuses:
                 bt.logging.info(f"Submitting total ELO bonuses for {len(final_miner_uids)} miners")
-                self.submit_elo_ratings(self.current_epoch, final_miner_uids, final_total_elo_bonuses, previous_scores, miner_response_map)
                 
-                # Store current ELO bonuses for next cycle
-                self.store_current_elo_scores(final_miner_uids, final_total_elo_bonuses)
+                # Apply soft forgetting to bonuses BEFORE sending to DB if it's the 10th epoch
+                final_bonuses = final_total_elo_bonuses.copy()
+                if self.current_epoch % 10 == 0:
+                    bt.logging.info(f"🎯 Epoch {self.current_epoch}: Applying soft forgetting to ELO bonuses before DB submission")
+                    base_rating = 1000
+                    gamma = 0.4
+                    
+                    for i, (uid, bonus) in enumerate(zip(final_miner_uids, final_total_elo_bonuses)):
+                        previous_elo = previous_scores.get(uid, 1000)
+                        current_elo = previous_elo + bonus
+                        # Apply soft forgetting: R' = μ + γ * (R - μ)
+                        forgotten_elo = base_rating + gamma * (current_elo - base_rating)
+                        # Convert back to bonus
+                        final_bonuses[i] = forgotten_elo - previous_elo
+                        bt.logging.debug(f"Miner {uid}: {current_elo} → {forgotten_elo} (bonus: {bonus} → {final_bonuses[i]})")
+                
+                # Submit to DB with forgotten bonuses
+                self.submit_elo_ratings(self.current_epoch, final_miner_uids, final_bonuses, previous_scores, miner_response_map)
                 
                 # Calculate final ELO scores and weights for this validator
                 final_scores = {}
-                for uid, total_elo_bonus in zip(final_miner_uids, final_total_elo_bonuses):
+                for uid, total_elo_bonus in zip(final_miner_uids, final_bonuses):
                     # Get previous ELO score or use default
                     previous_elo = previous_scores.get(uid, 1000)
                     final_elo = previous_elo + total_elo_bonus
@@ -509,7 +474,7 @@ class Validator(BaseValidatorNeuron):
                             'uid': uid  # Store UID for weight calculation
                         }
                 
-                # Store final scores for this validator
+                # Calculate and set weights
                 if final_scores:
                     validator_hotkey = self.metagraph.hotkeys[self.validator_uid] if self.validator_uid < len(self.metagraph.hotkeys) else None
                     if validator_hotkey:                        
@@ -525,10 +490,6 @@ class Validator(BaseValidatorNeuron):
             # Update epoch counter after all groups processed
             self.current_epoch += 1
             self.evaluation_round = 0
-            
-            # Check if we should apply soft forgetting (every 10 epochs)
-            if self.current_epoch % 10 == 0:
-                self.apply_soft_forgetting()
             
             bt.logging.info(f"Current epoch: {self.current_epoch}")
             
@@ -604,7 +565,7 @@ class Validator(BaseValidatorNeuron):
                     break
 
                 # Sync metagraph and potentially set weights.
-                self.sync(self.supabase)
+                self.sync()
 
                 self.step += 1
 

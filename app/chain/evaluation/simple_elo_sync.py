@@ -8,8 +8,7 @@ import json
 import time
 from typing import Dict, List, Optional
 import bittensor as bt
-from supabase import create_client, Client
-
+import requests
 
 class EloManager:
     """
@@ -17,43 +16,12 @@ class EloManager:
     No consensus, no waiting - just store scores and push weights.
     """
     
-    def __init__(self, supabase_url: str, supabase_key: str, validator_instance=None):
+    def __init__(self, validator_instance=None):
         # Test connection BEFORE creating the object
-        test_client = create_client(supabase_url, supabase_key)
-        try:
-            # Create a test record to verify full database functionality
-            test_data = {
-                'epoch': -1,  # Use negative epoch to avoid conflicts
-                'miner_hotkey': 'test_miner',
-                'elo_rating': 1000,
-                'validator_hotkey': 'test_validator',
-                'miner_response': 'Test miner response content',
-                'timestamp': time.time()
-            }
-            
-            # Insert test data
-            insert_result = test_client.table('elo_submissions').insert(test_data).execute()
-            bt.logging.info("✅ Test data inserted successfully")
-            
-            # Verify we can read it back
-            read_result = test_client.table('elo_submissions').select('*').eq('epoch', -1).execute()
-            if read_result.data:
-                bt.logging.info("✅ Test data read successfully")
-            else:
-                raise Exception("Could not read test data back")
-            
-            # Clean up test data
-            delete_result = test_client.table('elo_submissions').delete().eq('epoch', -1).execute()
-            bt.logging.info("✅ Test data cleaned up successfully")
-            
-            bt.logging.info("✅ Simple ELO sync connected to Supabase with full CRUD functionality")
-            
-        except Exception as e:
-            bt.logging.error(f"❌ Failed to connect to Supabase: {e}")
-            raise
+
+        self.api_url = "http://72.60.35.80/api/validator/submit-evaluation"
         
-        # Only create the object if connection test passes
-        self.supabase: Client = test_client
+            
         self.validator_instance = validator_instance
         self.validator_hotkey = None
     
@@ -72,111 +40,40 @@ class EloManager:
             if validator_hotkey is None:
                 bt.logging.error("❌ No validator hotkey available for ELO rating submission")
                 return False
-            
-            result = self.supabase.table('elo_submissions').upsert({
+
+            data = {
                 'epoch': epoch,
                 'miner_hotkey': miner_hotkey,
                 'elo_rating': rating,
                 'validator_hotkey': validator_hotkey,
                 'miner_response': miner_response,
                 'timestamp': time.time()
-            }).execute()
+            }
             
-            bt.logging.debug(f"✅ ELO rating submitted: Epoch {epoch}, Miner {miner_hotkey}, Rating {rating}, Validator {validator_hotkey}, Response stored: {'Yes' if miner_response else 'No'}")
-            return True
+            message = json.dumps(data, sort_keys=True, separators=(',', ':'))
+            signature = self.wallet.hotkey.sign(message)
+
+
+            payload = {
+                "hotkey": self.wallet.hotkey.ss58_address,
+                "data": data,
+                "signature": signature.hex()
+            }
+
+            response = requests.post(self.api_url, json=payload, timeout=30)
+            
+            if response.status_code == 200 and response.json().get("success"):
+                bt.logging.debug(f"ELO submitted: Epoch {epoch}, Miner {miner_hotkey[:10]}..., Rating {rating}")
+                return True
+            else:
+                bt.logging.error(f"API error {response.status_code}: {response.text}")
+                return False
             
         except Exception as e:
             bt.logging.error(f"❌ Failed to submit ELO rating: {e}")
             return False
 
-    def apply_soft_forgetting(self, validator_hotkey: str, gamma: float = 0.90) -> bool:
-        """
-        Apply soft forgetting to ELO ratings in Supabase.
-        Reduces ELO ratings towards base rating (1000) by factor gamma.
-        """
-        try:
-            base_rating = 1000
-            
-            # Get all current ELO ratings for this validator
-            result = self.supabase.table('elo_submissions').select('*').eq('validator_hotkey', validator_hotkey).order('timestamp', desc=True).execute()
-            
-            if not result.data:
-                bt.logging.info("No ELO ratings found for soft forgetting")
-                return True
-            
-            # Group by miner_hotkey and get latest rating for each
-            miner_latest_ratings = {}
-            for record in result.data:
-                miner_hotkey = record['miner_hotkey']
-                if miner_hotkey not in miner_latest_ratings:
-                    miner_latest_ratings[miner_hotkey] = record
-            
-            # Apply soft forgetting to each miner's latest rating
-            for miner_hotkey, latest_record in miner_latest_ratings.items():
-                current_elo = latest_record['elo_rating']
-                forgotten_elo = base_rating + gamma * (current_elo - base_rating)
-                
-                # Update the latest record with forgotten ELO
-                self.supabase.table('elo_submissions').update({
-                    'elo_rating': int(forgotten_elo)
-                }).eq('id', latest_record['id']).execute()
-            
-            bt.logging.info(f"Applied soft forgetting with γ={gamma} to {len(miner_latest_ratings)} miners")
-            return True
-            
-        except Exception as e:
-            bt.logging.error(f"Failed to apply soft forgetting: {e}")
-            return False
     
 
     
-    def push_weights_to_bittensor(self, epoch: int, validator_hotkey: str) -> bool:
-        """
-        Push validator's own weights to Bittensor.
-        Each validator pushes their own weights independently.
-        """
-        try:
-            # Get final scores for this validator in this epoch
-            result = self.supabase.table('validator_final_scores').select('*').eq('epoch', epoch).eq('validator_hotkey', validator_hotkey).execute()
-            
-            if not result.data:
-                bt.logging.warning(f"⚠️ No final scores found for validator {validator_hotkey} in epoch {epoch}")
-                return False
-            
-            if not self.validator_instance:
-                bt.logging.error("❌ No validator instance set")
-                return False
-            
-            # Create weight tensor from this validator's scores
-            metagraph = self.validator_instance.metagraph
-            weights = {}
-            
-            for score_data in result.data:
-                miner_hotkey = score_data['miner_hotkey']
-                final_weight = score_data['final_weight']
-                
-                # Find UID for this hotkey in metagraph
-                uid = None
-                for i, hotkey in enumerate(metagraph.hotkeys):
-                    if hotkey == miner_hotkey:
-                        uid = i
-                        break
-                
-                if uid is not None and uid < len(metagraph.hotkeys):
-                    weights[uid] = final_weight
-                    bt.logging.debug(f"⚖️ Miner {miner_hotkey} (UID {uid}): Weight {final_weight:.4f}")
-                else:
-                    bt.logging.warning(f"⚠️ Miner hotkey {miner_hotkey} not found in metagraph")
-            
-            # Set weights on Bittensor
-            if weights:
-                self.validator_instance.set_weights_from_consensus(weights)
-                bt.logging.info(f"🚀 Epoch {epoch} weights pushed to Bittensor by validator {validator_hotkey}: {len(weights)} miners")
-                return True
-            else:
-                bt.logging.warning(f"⚠️ No valid weights to push for epoch {epoch}")
-                return False
-                
-        except Exception as e:
-            bt.logging.error(f"❌ Failed to push epoch {epoch} to Bittensor: {e}")
-            return False
+    

@@ -86,7 +86,7 @@ class BaseNeuron(ABC):
     @abstractmethod
     def run(self): ...
 
-    def sync(self, supabase = None):
+    def sync(self):
         """
         Wrapper for synchronizing the state of the network for the given miner or validator.
         """

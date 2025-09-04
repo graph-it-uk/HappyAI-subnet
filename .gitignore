@@ -9,3 +9,12 @@ test.ipynb
 simple_elo_schema.sql
 complete_elo_analysis_full.txt
 elo_submissions_20250828_111633.csv
+.clinerules/byterover-rules.md
+.kilocode/rules/byterover-rules.md
+.roo/rules/byterover-rules.md
+.windsurf/rules/byterover-rules.md
+.cursor/rules/byterover-rules.mdc
+.kiro/steering/byterover-rules.md
+.qoder/rules/byterover-rules.md
+.augment/rules/byterover-rules.md
+initial/
