@@ -48,8 +48,7 @@ class Validator(BaseValidatorNeuron):
         # Initialize evaluator
         self.evaluator = Evaluator(llm_client, self.worker)
         
-        # Epoch management
-        self.current_epoch = 0
+
         self.epoch_duration = 600  # 10 minutes per epoch
         self.tournament_group_size = 6  # Default group size for tournaments
         self.num_evaluation_rounds = 3  
@@ -109,7 +108,7 @@ class Validator(BaseValidatorNeuron):
         bt.logging.info("Reloading banned miners list...")
         self.load_banned_miners()
     
-    def get_previous_elo_scores(self, miner_uids: List[int]) -> Dict[int, float]:
+    def get_previous_elo_scores(self, miner_uids: List[int]) -> tuple[Dict[int, float], int]:
         """
         Get previous ELO scores for miners from this validator's final scores.
         Accumulates scores across epochs without normalization.
@@ -118,19 +117,20 @@ class Validator(BaseValidatorNeuron):
             miner_uids: List of miner UIDs to get scores for
             
         Returns:
-            Dict mapping miner UID to accumulated ELO score
+            Tuple of (Dict mapping miner UID to accumulated ELO score, current_epoch)
         """
         try:
             previous_scores = {}
+            current_epoch = 0  # Will be updated from first successful API call
             
             # Get validator hotkey
             if not hasattr(self, 'validator_uid') or self.validator_uid is None:
                 bt.logging.warning("Validator UID not set yet")
-                return {}
+                return {}, 0
                 
             if self.validator_uid >= len(self.metagraph.hotkeys):
                 bt.logging.warning("Validator UID out of bounds")
-                return {}
+                return {}, 0
                 
             validator_hotkey = self.metagraph.hotkeys[self.validator_uid]
             
@@ -157,7 +157,10 @@ class Validator(BaseValidatorNeuron):
                     if result['found']:
                         current_elo = result['elo_rating']
                         previous_scores[uid] = current_elo
-                        bt.logging.debug(f"Miner {uid} ({miner_hotkey}): Current ELO score {current_elo}")
+                        # Capture epoch from the response (should be same for all miners from same validator)
+                        if 'epoch' in result:
+                            current_epoch = result['epoch']
+                        bt.logging.debug(f"Miner {uid} ({miner_hotkey}): Current ELO score {current_elo}, Epoch {current_epoch}")
                     else:
                         previous_scores[uid] = 1000
                         bt.logging.debug(f"Miner {uid} ({miner_hotkey}): No previous score, using default 1000")
@@ -165,16 +168,13 @@ class Validator(BaseValidatorNeuron):
                     bt.logging.error(f"API error {response.status_code}: {response.text}")
                     previous_scores[uid] = 1000
                             
-            bt.logging.info(f"Retrieved previous ELO scores for {len(previous_scores)} miners")
-            return previous_scores
+            bt.logging.info(f"Retrieved previous ELO scores for {len(previous_scores)} miners, current epoch: {current_epoch}")
+            return previous_scores, current_epoch
             
         except Exception as e:
             bt.logging.error(f"Error getting previous ELO scores: {e}")
-            return {}
+            return {}, 0
     
-    
-    
-
     def submit_elo_ratings(self, epoch: int, miner_uids: List[int], rewards: List[float], previous_scores: Dict[int, float] = None, miner_responses: Dict[int, str] = None):
         """
         Submit ELO ratings for evaluated miners.
@@ -194,7 +194,7 @@ class Validator(BaseValidatorNeuron):
         try:
             # Use provided previous scores or fetch them if not provided
             if previous_scores is None:
-                previous_scores = self.get_previous_elo_scores(miner_uids)
+                previous_scores, _ = self.get_previous_elo_scores(miner_uids)
             
             # Submit accumulated ELO ratings for evaluated miners
             for uid, reward in zip(miner_uids, rewards):
@@ -218,7 +218,7 @@ class Validator(BaseValidatorNeuron):
                     miner_response = miner_responses.get(uid) if miner_responses else None
                     
                     if validator_hotkey:
-                        success = self.elo_manager.submit_elo_rating(self.current_epoch, miner_hotkey, accumulated_elo, validator_hotkey, miner_response)
+                        success = self.elo_manager.submit_elo_rating(epoch, miner_hotkey, accumulated_elo, validator_hotkey, miner_response)
                         if success:
                             bt.logging.debug(f"✅ ELO rating {accumulated_elo} (previous: {previous_elo} + bonus: +{elo_bonus}) submitted for miner {uid} ({miner_hotkey}), Response stored: {'Yes' if miner_response else 'No'}")
                         else:
@@ -303,9 +303,12 @@ class Validator(BaseValidatorNeuron):
             all_miner_uids = [uid for uid in range(self.metagraph.n) if not self.metagraph.validator_permit[uid]]
             bt.logging.info(f"Found {len(all_miner_uids)} miners in metagraph")
             
-            # Load previous ELO scores for all miners
-            previous_scores = self.get_previous_elo_scores(all_miner_uids)
-            bt.logging.info(f"Loaded previous ELO scores for {len(previous_scores)} miners")
+            # Load previous ELO scores for all miners and get current epoch
+            previous_scores, current_epoch = self.get_previous_elo_scores(all_miner_uids)
+            bt.logging.info(f"Loaded previous ELO scores for {len(previous_scores)} miners, current epoch: {current_epoch}")
+            
+            # Increment epoch for new submissions
+            new_epoch = current_epoch + 1
             
             # Generate synthetic query ONCE for all miners
             synthetic_dialog = await self.synthetics_generator.generate()
@@ -442,8 +445,8 @@ class Validator(BaseValidatorNeuron):
                 
                 # Apply soft forgetting to bonuses BEFORE sending to DB if it's the 10th epoch
                 final_bonuses = final_total_elo_bonuses.copy()
-                if self.current_epoch % 10 == 0:
-                    bt.logging.info(f"🎯 Epoch {self.current_epoch}: Applying soft forgetting to ELO bonuses before DB submission")
+                if new_epoch % 10 == 0:
+                    bt.logging.info(f"🎯 Epoch {new_epoch}: Applying soft forgetting to ELO bonuses before DB submission")
                     base_rating = 1000
                     gamma = 0.4
                     
@@ -457,7 +460,7 @@ class Validator(BaseValidatorNeuron):
                         bt.logging.debug(f"Miner {uid}: {current_elo} → {forgotten_elo} (bonus: {bonus} → {final_bonuses[i]})")
                 
                 # Submit to DB with forgotten bonuses
-                self.submit_elo_ratings(self.current_epoch, final_miner_uids, final_bonuses, previous_scores, miner_response_map)
+                self.submit_elo_ratings(new_epoch, final_miner_uids, final_bonuses, previous_scores, miner_response_map)
                 
                 # Calculate final ELO scores and weights for this validator
                 final_scores = {}
@@ -481,17 +484,16 @@ class Validator(BaseValidatorNeuron):
                         # Calculate normalized weights (0 to 1) based on ELO scores
                         self.calculate_and_set_elo_weights(final_scores)
                         
-                        bt.logging.info(f"✅ Epoch {self.current_epoch} ELO weights calculated and set")
+                        bt.logging.info(f"✅ Epoch {new_epoch} ELO weights calculated and set")
                     else:
                         bt.logging.error(f"❌ Validator hotkey not available for UID {self.validator_uid}")
             else:
                 bt.logging.warning("No ELO data collected - no miners were successfully evaluated")
             
-            # Update epoch counter after all groups processed
-            self.current_epoch += 1
+            # Reset evaluation round
             self.evaluation_round = 0
             
-            bt.logging.info(f"Current epoch: {self.current_epoch}")
+            bt.logging.info(f"Validation cycle completed for epoch {new_epoch}")
             
             # Simple epoch management - wait for next cycle
             bt.logging.info(f"🔄 Waiting for next validation cycle...")
