@@ -144,7 +144,7 @@ class Validator(BaseValidatorNeuron):
                 miner_hotkey = self.metagraph.hotkeys[uid]
                 
                 response = requests.get(
-                    f"{self.api_base}/get-miner-elo",
+                    "http://72.60.35.80/api/validator/get-miner-elo",
                     params={
                         "validator_hotkey": validator_hotkey,
                         "miner_hotkey": miner_hotkey
