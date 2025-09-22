@@ -51,11 +51,11 @@ class EloManager:
             }
             
             message = json.dumps(data, sort_keys=True, separators=(',', ':'))
-            signature = self.wallet.hotkey.sign(message)
+            signature = self.validator_instance.wallet.hotkey.sign(message)
 
 
             payload = {
-                "hotkey": self.wallet.hotkey.ss58_address,
+                "hotkey": self.validator_instance.wallet.hotkey.ss58_address,
                 "data": data,
                 "signature": signature.hex()
             }
