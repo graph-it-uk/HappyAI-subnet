@@ -82,7 +82,7 @@ class Evaluator:
         bt.logging.info(f"Selected criteria: {[c['id'] for c in selected_criteria]}")
         
         # Evaluate all criteria together using LLM with full context
-        tournament_result = self._evaluate_criterion_tournament(responses, selected_criteria, dialog_context, current_question)
+        tournament_result = self._evaluate_criterion_tournament(responses, selected_criteria, dialog_context, current_question) 
         
         if not tournament_result or not tournament_result.miner_evaluations:
             bt.logging.error("Failed to get tournament evaluation results")

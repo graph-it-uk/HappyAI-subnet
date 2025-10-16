@@ -31,47 +31,97 @@ class EloManager:
         bt.logging.info(f"✅ Validator hotkey set to {validator_hotkey} in ELO sync manager")
     
     def submit_elo_rating(self, epoch: int, miner_hotkey: str, rating: int, validator_hotkey: str = None, miner_response: str = None) -> bool:
-        try:
-            # Use stored validator hotkey if none provided
-            if validator_hotkey is None and hasattr(self, 'validator_hotkey'):
-                validator_hotkey = self.validator_hotkey
-                bt.logging.debug(f"Using stored validator hotkey: {validator_hotkey}")
-            
-            if validator_hotkey is None:
-                bt.logging.error("❌ No validator hotkey available for ELO rating submission")
+        max_retries = 3
+        retry_delay = 1.0
+        
+        for attempt in range(max_retries):
+            try:
+                # Use stored validator hotkey if none provided
+                if validator_hotkey is None and hasattr(self, 'validator_hotkey'):
+                    validator_hotkey = self.validator_hotkey
+                    bt.logging.debug(f"Using stored validator hotkey: {validator_hotkey}")
+                
+                if validator_hotkey is None:
+                    bt.logging.error("❌ No validator hotkey available for ELO rating submission")
+                    return False
+
+                data = {
+                    'epoch': epoch,
+                    'miner_hotkey': miner_hotkey,
+                    'elo_rating': rating,
+                    'validator_hotkey': validator_hotkey,
+                    'miner_response': miner_response,
+                    'timestamp': time.time()
+                }
+                
+                message = json.dumps(data, sort_keys=True, separators=(',', ':'))
+                signature = self.validator_instance.wallet.hotkey.sign(message)
+
+                payload = {
+                    "hotkey": self.validator_instance.wallet.hotkey.ss58_address,
+                    "data": data,
+                    "signature": signature.hex()
+                }
+
+                response = requests.post(self.api_url, json=payload, timeout=30)
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    if result.get("success"):
+                        bt.logging.debug(f"✅ ELO submitted: Epoch {epoch}, Miner {miner_hotkey[:10]}..., Rating {rating}")
+                        return True
+                    else:
+                        bt.logging.warning(f"API returned success=False: {result.get('error', 'Unknown error')}")
+                        if attempt < max_retries - 1:
+                            bt.logging.info(f"Retrying in {retry_delay} seconds... (attempt {attempt + 1}/{max_retries})")
+                            time.sleep(retry_delay)
+                            retry_delay *= 2  # Exponential backoff
+                            continue
+                        return False
+                elif response.status_code == 503:
+                    bt.logging.warning(f"API server overloaded (503), attempt {attempt + 1}/{max_retries}")
+                    if attempt < max_retries - 1:
+                        bt.logging.info(f"Retrying in {retry_delay} seconds...")
+                        time.sleep(retry_delay)
+                        retry_delay *= 2  # Exponential backoff
+                        continue
+                    return False
+                else:
+                    bt.logging.error(f"API error {response.status_code}: {response.text}")
+                    if attempt < max_retries - 1:
+                        bt.logging.info(f"Retrying in {retry_delay} seconds... (attempt {attempt + 1}/{max_retries})")
+                        time.sleep(retry_delay)
+                        retry_delay *= 2  # Exponential backoff
+                        continue
+                    return False
+                
+            except requests.exceptions.Timeout:
+                bt.logging.warning(f"Request timeout, attempt {attempt + 1}/{max_retries}")
+                if attempt < max_retries - 1:
+                    bt.logging.info(f"Retrying in {retry_delay} seconds...")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2
+                    continue
                 return False
-
-            data = {
-                'epoch': epoch,
-                'miner_hotkey': miner_hotkey,
-                'elo_rating': rating,
-                'validator_hotkey': validator_hotkey,
-                'miner_response': miner_response,
-                'timestamp': time.time()
-            }
-            
-            message = json.dumps(data, sort_keys=True, separators=(',', ':'))
-            signature = self.validator_instance.wallet.hotkey.sign(message)
-
-
-            payload = {
-                "hotkey": self.validator_instance.wallet.hotkey.ss58_address,
-                "data": data,
-                "signature": signature.hex()
-            }
-
-            response = requests.post(self.api_url, json=payload, timeout=30)
-            
-            if response.status_code == 200 and response.json().get("success"):
-                bt.logging.debug(f"ELO submitted: Epoch {epoch}, Miner {miner_hotkey[:10]}..., Rating {rating}")
-                return True
-            else:
-                bt.logging.error(f"API error {response.status_code}: {response.text}")
+            except requests.exceptions.ConnectionError:
+                bt.logging.warning(f"Connection error, attempt {attempt + 1}/{max_retries}")
+                if attempt < max_retries - 1:
+                    bt.logging.info(f"Retrying in {retry_delay} seconds...")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2
+                    continue
                 return False
-            
-        except Exception as e:
-            bt.logging.error(f"❌ Failed to submit ELO rating: {e}")
-            return False
+            except Exception as e:
+                bt.logging.error(f"❌ Failed to submit ELO rating (attempt {attempt + 1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    bt.logging.info(f"Retrying in {retry_delay} seconds...")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2
+                    continue
+                return False
+        
+        bt.logging.error(f"❌ Failed to submit ELO rating after {max_retries} attempts")
+        return False
 
     
 

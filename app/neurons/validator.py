@@ -55,11 +55,16 @@ class Validator(BaseValidatorNeuron):
         self.evaluation_round = 0
         
         
+        
+        
         self.banned_coldkeys = set()
         self.load_banned_miners()
         
         # Set validator UID for ELO sync (will be updated in sync)
         self.validator_uid = None
+
+        # Configuration flag to skip evaluation and send 0 scores for all miners
+        self.skip_evaluation = True
 
 
 
@@ -134,7 +139,55 @@ class Validator(BaseValidatorNeuron):
                 
             validator_hotkey = self.metagraph.hotkeys[self.validator_uid]
             
-            for uid in miner_uids:
+            # First try batch API endpoint to reduce server load
+            try:
+                miner_hotkeys = [self.metagraph.hotkeys[uid] for uid in miner_uids if uid < len(self.metagraph.hotkeys)]
+                
+                response = requests.post(
+                    "http://72.60.35.80/api/validator/get-miner-elos-batch",
+                    json={
+                        "validator_hotkey": validator_hotkey,
+                        "miner_hotkeys": miner_hotkeys
+                    },
+                    timeout=30
+                )
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    if result.get('success'):
+                        elo_data = result.get('elo_scores', {})
+                        current_epoch = result.get('epoch', 0)
+                        found_miners = result.get('found_miners', 0)
+                        total_miners = result.get('total_miners', 0)
+                        
+                        for uid in miner_uids:
+                            if uid >= len(self.metagraph.hotkeys):
+                                previous_scores[uid] = 1000
+                                continue
+                                
+                            miner_hotkey = self.metagraph.hotkeys[uid]
+                            if miner_hotkey in elo_data:
+                                previous_scores[uid] = elo_data[miner_hotkey]
+                                bt.logging.debug(f"Miner {uid} ({miner_hotkey}): Current ELO score {elo_data[miner_hotkey]}")
+                            else:
+                                previous_scores[uid] = 1000
+                                bt.logging.debug(f"Miner {uid} ({miner_hotkey}): No previous score, using default 1000")
+                        
+                        bt.logging.info(f"✅ Batch API: Found {found_miners}/{total_miners} miners, epoch: {current_epoch}")
+                        return previous_scores, current_epoch
+                    else:
+                        bt.logging.warning(f"Batch API returned error: {result.get('error', 'Unknown error')}")
+                else:
+                    bt.logging.warning(f"Batch API error {response.status_code}: {response.text}")
+                    
+            except Exception as e:
+                bt.logging.warning(f"Batch API failed, falling back to individual requests: {e}")
+            
+            # Fallback to individual requests with rate limiting
+            bt.logging.info("Falling back to individual ELO score requests with rate limiting...")
+            import time
+            
+            for i, uid in enumerate(miner_uids):
                 # Get miner hotkey from metagraph
                 if uid >= len(self.metagraph.hotkeys):
                     bt.logging.warning(f"Miner UID {uid} out of bounds")
@@ -143,29 +196,38 @@ class Validator(BaseValidatorNeuron):
                 
                 miner_hotkey = self.metagraph.hotkeys[uid]
                 
-                response = requests.get(
-                    "http://72.60.35.80/api/validator/get-miner-elo",
-                    params={
-                        "validator_hotkey": validator_hotkey,
-                        "miner_hotkey": miner_hotkey
-                    },
-                    timeout=10
-                )
+                # Rate limiting: wait 0.1 seconds between requests to avoid overwhelming the server
+                if i > 0:
+                    time.sleep(0.1)
+                
+                try:
+                    response = requests.get(
+                        "http://72.60.35.80/api/validator/get-miner-elo",
+                        params={
+                            "validator_hotkey": validator_hotkey,
+                            "miner_hotkey": miner_hotkey
+                        },
+                        timeout=10
+                    )
 
-                if response.status_code == 200:
-                    result = response.json()
-                    if result['found']:
-                        current_elo = result['elo_rating']
-                        previous_scores[uid] = current_elo
-                        # Capture epoch from the response (should be same for all miners from same validator)
-                        if 'epoch' in result:
-                            current_epoch = result['epoch']
-                        bt.logging.debug(f"Miner {uid} ({miner_hotkey}): Current ELO score {current_elo}, Epoch {current_epoch}")
+                    if response.status_code == 200:
+                        result = response.json()
+                        if result['found']:
+                            current_elo = result['elo_rating']
+                            previous_scores[uid] = current_elo
+                            # Capture epoch from the response (should be same for all miners from same validator)
+                            if 'epoch' in result:
+                                current_epoch = result['epoch']
+                            bt.logging.debug(f"Miner {uid} ({miner_hotkey}): Current ELO score {current_elo}, Epoch {current_epoch}")
+                        else:
+                            previous_scores[uid] = 1000
+                            bt.logging.debug(f"Miner {uid} ({miner_hotkey}): No previous score, using default 1000")
                     else:
+                        bt.logging.error(f"API error {response.status_code}: {response.text}")
                         previous_scores[uid] = 1000
-                        bt.logging.debug(f"Miner {uid} ({miner_hotkey}): No previous score, using default 1000")
-                else:
-                    bt.logging.error(f"API error {response.status_code}: {response.text}")
+                        
+                except Exception as e:
+                    bt.logging.error(f"Error fetching ELO for miner {uid}: {e}")
                     previous_scores[uid] = 1000
                             
             bt.logging.info(f"Retrieved previous ELO scores for {len(previous_scores)} miners, current epoch: {current_epoch}")
@@ -289,7 +351,50 @@ class Validator(BaseValidatorNeuron):
             bt.logging.error(f"Error calculating ELO weights: {e}")
             bt.logging.debug(print_exception(type(e), e, e.__traceback__))
 
+    async def _handle_skip_evaluation(self, all_miner_uids: List[int]):
+        """
+        Handle the case when evaluation is disabled - assign 0 scores to all miners.
+        
+        Args:
+            all_miner_uids: List of all miner UIDs to assign 0 scores to
+        """
+        try:
 
+            
+            # Get current epoch (increment from previous)
+            _, current_epoch = self.get_previous_elo_scores(all_miner_uids)
+            new_epoch = current_epoch + 1
+            
+            zero_scores = [0.0] * len(all_miner_uids)
+            
+            zero_previous_scores = {uid: 0.0 for uid in all_miner_uids}
+            
+            self.submit_elo_ratings(new_epoch, all_miner_uids, zero_scores, zero_previous_scores)
+            
+            final_scores = {}
+            for uid in all_miner_uids:
+                if uid < len(self.metagraph.hotkeys):
+                    miner_hotkey = self.metagraph.hotkeys[uid]
+                    final_elo = 0.0  
+                    
+                    final_scores[miner_hotkey] = {
+                        'final_elo': final_elo,
+                        'uid': uid
+                    }
+            
+            if final_scores:
+                self.calculate_and_set_elo_weights(final_scores)
+                bt.logging.info(f"✅ Epoch {new_epoch} - Zero scores assigned to all {len(all_miner_uids)} miners")
+            else:
+                bt.logging.warning("No miners to assign zero scores to")
+            
+            # Wait before next cycle (same as normal flow)
+            bt.logging.info(f"🔄 Waiting for next validation cycle...")
+            await asyncio.sleep(60)  # Wait 1 minute before next cycle
+            
+        except Exception as e:
+            bt.logging.error(f"Error in skip evaluation mode: {e}")
+            bt.logging.debug(print_exception(type(e), e, e.__traceback__))
 
     async def forward(self):
         """
@@ -302,6 +407,12 @@ class Validator(BaseValidatorNeuron):
             # Get all current miner UIDs from metagraph (excluding validators)
             all_miner_uids = [uid for uid in range(self.metagraph.n) if not self.metagraph.validator_permit[uid]]
             bt.logging.info(f"Found {len(all_miner_uids)} miners in metagraph")
+            
+            # Check if evaluation is disabled
+            if self.skip_evaluation:
+                bt.logging.warning("🚫 EVALUATION DISABLED - Skipping all evaluation and assigning 0 scores to all miners")
+                await self._handle_skip_evaluation(all_miner_uids)
+                return
             
             # Load previous ELO scores for all miners and get current epoch
             previous_scores, current_epoch = self.get_previous_elo_scores(all_miner_uids)
@@ -538,18 +649,24 @@ class Validator(BaseValidatorNeuron):
 
         bt.logging.info(f"Validator starting at block: {self.block}")
         
-        # Set validator UID for ELO sync
+        # Set validator UID for ELO sync - MUST be done before any forward operations
         if self.validator_uid is None:
             try:
                 self.validator_uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
-                bt.logging.info(f"Validator UID set to: {self.validator_uid}")
+                bt.logging.info(f"✅ Validator UID set to: {self.validator_uid}")
                 
                 validator_hotkey = self.wallet.hotkey.ss58_address
                 self.elo_manager.set_validator_hotkey(validator_hotkey)
-                bt.logging.info(f"Validator hotkey set in ELO sync manager: {validator_hotkey}")
+                bt.logging.info(f"✅ Validator hotkey set in ELO sync manager: {validator_hotkey}")
                     
             except ValueError:
-                bt.logging.warning("Validator not found in metagraph")
+                bt.logging.error("❌ Validator not found in metagraph - cannot proceed")
+                return
+        else:
+            # Ensure ELO manager has the hotkey even if UID was already set
+            validator_hotkey = self.wallet.hotkey.ss58_address
+            self.elo_manager.set_validator_hotkey(validator_hotkey)
+            bt.logging.info(f"✅ Validator hotkey confirmed in ELO sync manager: {validator_hotkey}")
         
         self.axon.start()
         bt.logging.info("Axon started and ready to handle OfficialSynapse requests.")
